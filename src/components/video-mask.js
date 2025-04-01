@@ -8,12 +8,17 @@ export default function VideoMask({ maskRef, videoWidth, videoHeight, isRecordin
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const containerRef = useRef(null);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  // Track whether dimensions have been initialized
+  const hasInitialized = useRef(false);
 
   // Calculate mask dimensions based on actual rendered video size
   useEffect(() => {
     if (!containerRef.current) return;
     
     const updateDimensions = () => {
+      // Only continue if we have a valid container
+      if (!containerRef.current) return;
+      
       const containerRect = containerRef.current.getBoundingClientRect();
       
       // Use the actual rendered height of the video container
@@ -33,10 +38,19 @@ export default function VideoMask({ maskRef, videoWidth, videoHeight, isRecordin
       // Center the mask horizontally
       const initialX = (containerRect.width - evenWidth) / 2;
       setPosition({ x: initialX, y: 0 });
+      
+      // Mark as initialized
+      hasInitialized.current = true;
     };
+    
+    // Reset initialization flag when component mounts or video changes
+    hasInitialized.current = false;
     
     // Initial calculation
     updateDimensions();
+    
+    // Additional timeout to ensure video has rendered properly
+    setTimeout(updateDimensions, 100);
     
     // Recalculate on window resize
     window.addEventListener('resize', updateDimensions);
@@ -169,8 +183,8 @@ export default function VideoMask({ maskRef, videoWidth, videoHeight, isRecordin
           isRecording ? 'border-red-500' : 'border-yellow-400'
         } ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
         style={{
-          width: `${dimensions.width}px`,
-          height: `${dimensions.height}px`,
+          width: dimensions.width ? `${dimensions.width}px` : '0',
+          height: dimensions.height ? `${dimensions.height}px` : '0',
           left: `${position.x}px`,
           top: `${position.y}px`,
           backgroundColor: 'rgba(255, 255, 0, 0.1)',

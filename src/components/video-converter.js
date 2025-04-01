@@ -7,7 +7,7 @@ import VideoPlayer from './video-player';
 import VideoMask from './video-mask';
 import ExportProgress from './export-progress';
 
-export default function VideoConverter() {
+export default function VideoConverter({ lang }) {
   const [videoFile, setVideoFile] = useState(null);
   const [videoUrl, setVideoUrl] = useState('');
   const [videoMetadata, setVideoMetadata] = useState({
@@ -20,6 +20,7 @@ export default function VideoConverter() {
   const [countdown, setCountdown] = useState(0);
   const [exportProgress, setExportProgress] = useState(0);
   const [outputVideoUrl, setOutputVideoUrl] = useState('');
+  const [videoResetKey, setVideoResetKey] = useState(0);
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -49,6 +50,14 @@ export default function VideoConverter() {
     setIsRecording(false);
     setExportProgress(0);
     recordedFramesRef.current = [];
+    // Increment key to force re-mount of mask
+    setVideoResetKey(prevKey => prevKey + 1);
+    // Reset video metadata to ensure proper recalculation
+    setVideoMetadata({
+      width: 0,
+      height: 0,
+      duration: 0
+    });
   };
   
   // Load video metadata when video is loaded
@@ -86,7 +95,7 @@ export default function VideoConverter() {
     
     // Start video playback
     if (videoRef.current) {
-      videoRef.current.play();
+      videoRef.current.play()
     }
   };
   
@@ -193,7 +202,7 @@ export default function VideoConverter() {
       // Ensure dimensions are even numbers for H.264 encoding
       const width = Math.floor(firstFrame.width / 2) * 2;
       const height = Math.floor(firstFrame.height / 2) * 2;
-      
+    
       canvas.width = width;
       canvas.height = height;
       
@@ -288,7 +297,7 @@ export default function VideoConverter() {
   return (
     <div className="w-full max-w-4xl mx-auto">
       {!videoFile ? (
-        <VideoUploader onUpload={handleVideoUpload} />
+        <VideoUploader onUpload={handleVideoUpload} lang={lang} />
       ) : (
         <div className="relative flex flex-col items-center">
           <div className="relative">
@@ -298,10 +307,12 @@ export default function VideoConverter() {
               onLoad={handleVideoLoad}
               onEnded={handleVideoEnded}
               isPlaying={isPlaying}
+              lang={lang}
             />
             
             {videoMetadata.width > 0 && (
               <VideoMask
+                key={videoResetKey} 
                 maskRef={maskRef}
                 videoWidth={videoMetadata.width}
                 videoHeight={videoMetadata.height}
@@ -365,6 +376,14 @@ export default function VideoConverter() {
                     setVideoFile(null);
                     setVideoUrl('');
                     setOutputVideoUrl('');
+                    // Reset mask state by incrementing key
+                    setVideoResetKey(prevKey => prevKey + 1);
+                    // Reset video metadata
+                    setVideoMetadata({
+                      width: 0,
+                      height: 0,
+                      duration: 0
+                    });
                   }}
                   className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
                 >
