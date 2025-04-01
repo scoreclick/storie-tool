@@ -14,7 +14,7 @@ export default function VideoConverter({ lang }) {
     width: 0,
     height: 0,
     duration: 0,
-    fps: 0
+    fps: 30 // Default to 30fps
   });
   const [isPlaying, setIsPlaying] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -30,14 +30,12 @@ export default function VideoConverter({ lang }) {
   const animationFrameRef = useRef(null);
   const recordedFramesRef = useRef([]);
   const lastCaptureTimeRef = useRef(0);
-  const frameCountRef = useRef(0);
-  const lastTimeRef = useRef(0);
   
   // Get FPS from video metadata or use a fallback
   const getFps = useCallback(() => {
-    // Use detected FPS if available, otherwise use a reasonable fallback
-    return videoMetadata.fps > 0 ? videoMetadata.fps : 30;
-  }, [videoMetadata.fps]);
+    // Default to 30fps, it's safer than attempting to detect
+    return 30;
+  }, []);
   
   // Clean up URLs when component unmounts
   useEffect(() => {
@@ -63,8 +61,6 @@ export default function VideoConverter({ lang }) {
     setProcessingError('');
     recordedFramesRef.current = [];
     lastCaptureTimeRef.current = 0;
-    frameCountRef.current = 0;
-    lastTimeRef.current = 0;
     // Increment key to force re-mount of mask
     setVideoResetKey(prevKey => prevKey + 1);
     // Reset video metadata to ensure proper recalculation
@@ -72,54 +68,15 @@ export default function VideoConverter({ lang }) {
       width: 0,
       height: 0,
       duration: 0,
-      fps: 0
+      fps: 30
     });
   };
-  
-  // Calculate FPS from video playback
-  const detectFps = useCallback(() => {
-    if (!videoRef.current) return;
-    
-    const now = performance.now();
-    const video = videoRef.current;
-    
-    if (lastTimeRef.current === 0) {
-      lastTimeRef.current = now;
-      return;
-    }
-    
-    // Increment frame count
-    frameCountRef.current++;
-    
-    // Check if we've been monitoring for at least 500ms
-    const elapsed = now - lastTimeRef.current;
-    if (elapsed >= 500 && frameCountRef.current > 10) {
-      // Calculate FPS
-      const detectedFps = Math.round((frameCountRef.current * 1000) / elapsed);
-      
-      // Ensure FPS is reasonable (between 15 and 60)
-      const normalizedFps = Math.max(15, Math.min(detectedFps, 60));
-      
-      // Update metadata if FPS has changed
-      if (normalizedFps !== videoMetadata.fps) {
-        setVideoMetadata(prev => ({
-          ...prev,
-          fps: normalizedFps
-        }));
-        console.log(`Detected video FPS: ${normalizedFps}`);
-      }
-      
-      // Reset counters
-      frameCountRef.current = 0;
-      lastTimeRef.current = now;
-    }
-  }, [videoMetadata.fps]);
   
   // Load video metadata when video is loaded
   const handleVideoLoad = (metadata) => {
     setVideoMetadata({
       ...metadata,
-      fps: 0 // Will be detected during playback
+      fps: 30 // Fixed frame rate
     });
   };
   
@@ -131,8 +88,6 @@ export default function VideoConverter({ lang }) {
     videoRef.current.currentTime = 0;
     recordedFramesRef.current = [];
     lastCaptureTimeRef.current = 0;
-    frameCountRef.current = 0;
-    lastTimeRef.current = 0;
     setProcessingError('');
     
     // Start countdown
@@ -177,30 +132,12 @@ export default function VideoConverter({ lang }) {
     // Clear recorded frames
     recordedFramesRef.current = [];
     lastCaptureTimeRef.current = 0;
-    frameCountRef.current = 0;
-    lastTimeRef.current = 0;
     
     // Small delay before starting new countdown
     setTimeout(() => {
       startRecording();
     }, 500);
   };
-  
-  // Run FPS detection during video playback
-  useEffect(() => {
-    let fpsDetectionInterval;
-    
-    if (isPlaying && videoMetadata.fps === 0) {
-      // Sample FPS every 100ms during playback
-      fpsDetectionInterval = setInterval(detectFps, 100);
-    }
-    
-    return () => {
-      if (fpsDetectionInterval) {
-        clearInterval(fpsDetectionInterval);
-      }
-    };
-  }, [isPlaying, videoMetadata.fps, detectFps]);
   
   // Capture frames during recording
   const captureFrame = useCallback(() => {
@@ -223,84 +160,59 @@ export default function VideoConverter({ lang }) {
     }
     
     // Update last capture time to maintain consistent intervals
-    // Use a multiple of frameInterval to maintain proper timing
-    lastCaptureTimeRef.current += frameInterval;
+    lastCaptureTimeRef.current = currentTime;
     
-    // Get mask position and dimensions
-    const maskRect = mask.getBoundingClientRect();
-    const videoRect = video.getBoundingClientRect();
-    
-    // Calculate relative position of mask over video
-    const relX = (maskRect.left - videoRect.left) / videoRect.width;
-    const relY = (maskRect.top - videoRect.top) / videoRect.height;
-    const relWidth = maskRect.width / videoRect.width;
-    const relHeight = maskRect.height / videoRect.height;
-    
-    // Calculate source and destination coordinates for drawing
-    const sourceX = relX * video.videoWidth;
-    const sourceY = relY * video.videoHeight;
-    const sourceWidth = relWidth * video.videoWidth;
-    const sourceHeight = relHeight * video.videoHeight;
-    
-    // Ensure dimensions are even numbers (required by H.264 encoding)
-    // Floor to even number
-    const evenSourceWidth = Math.floor(sourceWidth / 2) * 2;
-    const evenSourceHeight = Math.floor(sourceHeight / 2) * 2;
-    
-    // Set canvas dimensions for 9:16 aspect ratio with even numbers
-    canvas.width = evenSourceWidth;
-    canvas.height = evenSourceHeight;
-    
-    // Draw the current frame to the canvas
-    ctx.drawImage(
-      video,
-      sourceX, sourceY, sourceWidth, sourceHeight,
-      0, 0, canvas.width, canvas.height
-    );
-    
-    // Calculate ideal width based on video duration
-    let outputWidth = canvas.width;
-    let outputHeight = canvas.height;
-    
-    // Scale down resolution for longer videos to reduce file size
-    if (videoMetadata.duration > 120) {
-      // For very long videos, reduce to 720p equivalent
-      const scale = 720 / outputHeight;
-      outputWidth = Math.floor(outputWidth * scale / 2) * 2;
-      outputHeight = Math.floor(outputHeight * scale / 2) * 2;
-    } else if (videoMetadata.duration > 60) {
-      // For long videos, reduce to 900p equivalent
-      const scale = 900 / outputHeight;
-      outputWidth = Math.floor(outputWidth * scale / 2) * 2;
-      outputHeight = Math.floor(outputHeight * scale / 2) * 2;
-    }
-    
-    // Create smaller canvas for scaled output if needed
-    let finalCanvas = canvas;
-    let finalCtx = ctx;
-    
-    if (outputWidth !== canvas.width || outputHeight !== canvas.height) {
-      // Create a temporary canvas for scaling
-      const tempCanvas = document.createElement('canvas');
-      tempCanvas.width = outputWidth;
-      tempCanvas.height = outputHeight;
-      const tempCtx = tempCanvas.getContext('2d', { willReadFrequently: true });
+    try {
+      // Get mask position and dimensions
+      const maskRect = mask.getBoundingClientRect();
+      const videoRect = video.getBoundingClientRect();
       
-      // Draw scaled image
-      tempCtx.drawImage(canvas, 0, 0, canvas.width, canvas.height, 0, 0, outputWidth, outputHeight);
-      finalCanvas = tempCanvas;
-      finalCtx = tempCtx;
+      // Calculate relative position of mask over video
+      const relX = (maskRect.left - videoRect.left) / videoRect.width;
+      const relY = (maskRect.top - videoRect.top) / videoRect.height;
+      const relWidth = maskRect.width / videoRect.width;
+      const relHeight = maskRect.height / videoRect.height;
+      
+      // Calculate source and destination coordinates for drawing
+      const sourceX = relX * video.videoWidth;
+      const sourceY = relY * video.videoHeight;
+      const sourceWidth = relWidth * video.videoWidth;
+      const sourceHeight = relHeight * video.videoHeight;
+      
+      // Ensure dimensions are even numbers (required by H.264 encoding)
+      // Floor to even number
+      const evenSourceWidth = Math.floor(sourceWidth / 2) * 2;
+      const evenSourceHeight = Math.floor(sourceHeight / 2) * 2;
+      
+      // Set canvas dimensions for 9:16 aspect ratio with even numbers
+      canvas.width = evenSourceWidth;
+      canvas.height = evenSourceHeight;
+      
+      // Draw the current frame to the canvas
+      ctx.drawImage(
+        video,
+        sourceX, sourceY, sourceWidth, sourceHeight,
+        0, 0, canvas.width, canvas.height
+      );
+      
+      // Keep original resolution - scaling is now handled in the export process
+      const outputWidth = canvas.width;
+      const outputHeight = canvas.height;
+      
+      // Capture the frame
+      const imageData = ctx.getImageData(0, 0, outputWidth, outputHeight);
+      
+      recordedFramesRef.current.push({
+        imageData,
+        timestamp: currentTime,
+        width: outputWidth,
+        height: outputHeight
+      });
+    } catch (error) {
+      console.error('Error capturing frame:', error);
     }
     
-    // Capture the frame
-    recordedFramesRef.current.push({
-      imageData: finalCtx.getImageData(0, 0, outputWidth, outputHeight),
-      timestamp: currentTime,
-      width: outputWidth,
-      height: outputHeight
-    });
-    
-  }, [isRecording, videoMetadata.duration, getFps]);
+  }, [isRecording, getFps]);
   
   // Handle video ended event
   const handleVideoEnded = async () => {
@@ -313,57 +225,14 @@ export default function VideoConverter({ lang }) {
     }
   };
   
-  // Process frames in chunks to avoid memory issues
-  const processFramesInChunks = async (frames, videoEncoder, totalFrames, frameRate) => {
-    const CHUNK_SIZE = 30; // Process 30 frames at a time
-    let processedCount = 0;
-    
-    try {
-      for (let chunkStart = 0; chunkStart < totalFrames; chunkStart += CHUNK_SIZE) {
-        const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, totalFrames);
-        
-        // Process each frame in the current chunk
-        for (let i = chunkStart; i < chunkEnd; i++) {
-          const frame = frames[i];
-          
-          // Create a VideoFrame
-          const videoFrame = new VideoFrame(
-            frame.imageData, 
-            {
-              timestamp: Math.round(frame.timestamp * 1000), // Convert to microseconds
-              duration: Math.round(1000000 / frameRate), // Duration in microseconds
-            }
-          );
-          
-          // Determine if this should be a keyframe (every 30 frames or first frame)
-          const keyFrame = i === 0 || i % 30 === 0;
-          
-          // Encode the frame
-          await videoEncoder.encode(videoFrame, { keyFrame });
-          videoFrame.close();
-          
-          // Release memory by removing processed frame data
-          frames[i].imageData = null;
-          
-          // Update progress
-          processedCount++;
-          setExportProgress(Math.round(processedCount / totalFrames * 100));
-        }
-        
-        // Small delay to allow for GC
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
-    } catch (error) {
-      throw error;
-    }
-  };
-  
-  // Export the recorded frames to MP4
+  // Export the recorded frames to MP4 using simpler approach
   const exportVideo = async () => {
     const frames = recordedFramesRef.current;
     if (!frames.length) return;
     
     try {
+      console.log(`Starting export with ${frames.length} frames...`);
+      
       // Check if WebCodecs API is available
       if (typeof window !== 'undefined' && !('VideoEncoder' in window)) {
         throw new Error(
@@ -377,71 +246,112 @@ export default function VideoConverter({ lang }) {
       const width = firstFrame.width;
       const height = firstFrame.height;
       
-      // Get input video's frame rate
-      const frameRate = getFps();
+      console.log(`Frame dimensions: ${width}x${height}`);
+      
+      // Create a temporary canvas for encoding
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
       
       // Fixed bitrate of 2Mbps
       const bitrate = 2_000_000;
+      const frameRate = 30; // Fixed at 30fps for reliable encoding
       
-      // Configure video encoder
-      const target = new ArrayBufferTarget();
-      const muxer = new Muxer({
-        target,
-        video: {
-          codec: 'avc',
+      console.log(`Using fixed settings: ${frameRate}fps, ${bitrate/1000000}Mbps`);
+      
+      try {
+        // Configure video encoder
+        const target = new ArrayBufferTarget();
+        const muxer = new Muxer({
+          target,
+          video: {
+            codec: 'avc',
+            width,
+            height
+          },
+          fastStart: 'in-memory'
+        });
+        
+        // Initialize encoder with optimized settings
+        const videoEncoder = new VideoEncoder({
+          output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
+          error: (e) => {
+            console.error('Encoder error:', e);
+            setProcessingError(`Encoding error: ${e.message}`);
+          }
+        });
+        
+        await videoEncoder.configure({
+          codec: 'avc1.42001f', // H.264 baseline profile
           width,
-          height
-        },
-        fastStart: 'in-memory',
-        firstTimestampBehavior: 'offset'
-      });
-      
-      // Initialize encoder with optimized settings
-      const videoEncoder = new VideoEncoder({
-        output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-        error: (e) => {
-          console.error('Encoder error:', e);
-          setProcessingError(`Encoding error: ${e.message}`);
+          height,
+          bitrate,
+          framerate: frameRate
+        });
+        
+        const totalFrames = frames.length;
+        console.log(`Processing ${totalFrames} frames...`);
+        
+        // Process frames one by one
+        for (let i = 0; i < totalFrames; i++) {
+          // Update progress
+          setExportProgress(Math.round((i + 1) / totalFrames * 100));
+          
+          // Get frame data
+          const frame = frames[i];
+          
+          // Draw to canvas
+          ctx.putImageData(frame.imageData, 0, 0);
+          
+          // Create video frame from canvas
+          const videoFrame = new VideoFrame(canvas, {
+            timestamp: i * (1000000 / frameRate), // Simple sequential timestamps
+            duration: 1000000 / frameRate
+          });
+          
+          // Key frame every 30 frames or on first frame
+          const keyFrame = i === 0 || i % 30 === 0;
+          
+          try {
+            // Encode frame
+            await videoEncoder.encode(videoFrame, { keyFrame });
+            videoFrame.close();
+          } catch (frameError) {
+            console.error(`Error encoding frame ${i}:`, frameError);
+            videoFrame.close();
+          }
+          
+          // Clear reference to data
+          frames[i].imageData = null;
+          
+          // Add a small delay every 10 frames to prevent browser from becoming unresponsive
+          if (i % 10 === 0 && i > 0) {
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
         }
-      });
-      
-      await videoEncoder.configure({
-        codec: 'avc1.42001f', // H.264 baseline profile
-        width,
-        height,
-        bitrate,
-        framerate: frameRate,
-        // Add AVC encoder specific settings
-        avc: {
-          format: 'annexb',
-          profile: 'baseline', // Widest device compatibility
-          level: '4.1' // Good balance of quality & compatibility
-        }
-      });
-      
-      const totalFrames = frames.length;
-      
-      console.log(`Encoding video: ${width}x${height} at ${frameRate}fps (matched from input) with ${bitrate/1000000}Mbps`);
-      
-      // Process frames in chunks to avoid memory issues
-      await processFramesInChunks(frames, videoEncoder, totalFrames, frameRate);
-      
-      // Finish encoding
-      await videoEncoder.flush();
-      muxer.finalize();
-      
-      // Create URL for the encoded video
-      const blob = new Blob([target.buffer], { type: 'video/mp4' });
-      const url = URL.createObjectURL(blob);
-      
-      // Log file size
-      console.log(`Output file size: ${(blob.size / (1024 * 1024)).toFixed(2)} MB`);
-      
-      setOutputVideoUrl(url);
-      setExportProgress(100);
+        
+        // Finish encoding
+        await videoEncoder.flush();
+        muxer.finalize();
+        
+        console.log('Video encoding completed successfully');
+        
+        // Create URL for the encoded video
+        const blob = new Blob([target.buffer], { type: 'video/mp4' });
+        console.log(`Output file size: ${(blob.size / (1024 * 1024)).toFixed(2)} MB`);
+        
+        const url = URL.createObjectURL(blob);
+        setOutputVideoUrl(url);
+        setExportProgress(100);
+        
+      } catch (encoderError) {
+        console.error('Encoder setup/processing error:', encoderError);
+        throw new Error(`Video encoding failed: ${encoderError.message}`);
+      }
       
     } catch (error) {
-      console.error('Error exporting video:', error);
+      console.error('Export error:', error);
       setExportProgress(0);
       setProcessingError(`Failed to export video: ${error.message}`);
     }
@@ -572,7 +482,7 @@ export default function VideoConverter({ lang }) {
                       width: 0,
                       height: 0,
                       duration: 0,
-                      fps: 0
+                      fps: 30
                     });
                   }}
                   className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
