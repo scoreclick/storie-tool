@@ -42,6 +42,7 @@ export default function VideoPlayer({ videoRef, src, onLoad, onEnded, isPlaying,
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={onEnded}
         playsInline
+        crossOrigin="anonymous"
       />
       
       {!isLoaded && (

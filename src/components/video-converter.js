@@ -23,6 +23,7 @@ export default function VideoConverter({ lang }) {
   const [outputVideoUrl, setOutputVideoUrl] = useState('');
   const [videoResetKey, setVideoResetKey] = useState(0);
   const [processingError, setProcessingError] = useState('');
+  const [showVideoInput, setShowVideoInput] = useState(true);
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -59,6 +60,7 @@ export default function VideoConverter({ lang }) {
     setIsRecording(false);
     setExportProgress(0);
     setProcessingError('');
+    setShowVideoInput(true);
     recordedFramesRef.current = [];
     lastCaptureTimeRef.current = 0;
     // Increment key to force re-mount of mask
@@ -371,6 +373,7 @@ export default function VideoConverter({ lang }) {
         const url = URL.createObjectURL(blob);
         setOutputVideoUrl(url);
         setExportProgress(100);
+        setShowVideoInput(false); // Hide the video input when export is complete
         
       } catch (encoderError) {
         console.error('Encoder setup/processing error:', encoderError);
@@ -410,32 +413,34 @@ export default function VideoConverter({ lang }) {
         <VideoUploader onUpload={handleVideoUpload} lang={lang} />
       ) : (
         <div className="relative flex flex-col items-center">
-          <div className="relative">
-            <VideoPlayer
-              videoRef={videoRef}
-              src={videoUrl}
-              onLoad={handleVideoLoad}
-              onEnded={handleVideoEnded}
-              isPlaying={isPlaying}
-              lang={lang}
-            />
-            
-            {videoMetadata.width > 0 && (
-              <VideoMask
-                key={videoResetKey} 
-                maskRef={maskRef}
-                videoWidth={videoMetadata.width}
-                videoHeight={videoMetadata.height}
-                isRecording={isRecording}
+          {showVideoInput && (
+            <div className="relative">
+              <VideoPlayer
+                videoRef={videoRef}
+                src={videoUrl}
+                onLoad={handleVideoLoad}
+                onEnded={handleVideoEnded}
+                isPlaying={isPlaying}
+                lang={lang}
               />
-            )}
-            
-            {/* Hidden canvas for capturing frames */}
-            <canvas 
-              ref={canvasRef} 
-              className="hidden"
-            />
-          </div>
+              
+              {videoMetadata.width > 0 && (
+                <VideoMask
+                  key={videoResetKey} 
+                  maskRef={maskRef}
+                  videoWidth={videoMetadata.width}
+                  videoHeight={videoMetadata.height}
+                  isRecording={isRecording}
+                />
+              )}
+              
+              {/* Hidden canvas for capturing frames */}
+              <canvas 
+                ref={canvasRef} 
+                className="hidden"
+              />
+            </div>
+          )}
           
           {countdown > 0 && (
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
@@ -487,23 +492,70 @@ export default function VideoConverter({ lang }) {
             {outputVideoUrl && (
               <div className="flex flex-col items-center gap-2 w-full">
                 <video
-                  className="max-h-60 max-w-full border rounded"
+                  className="max-h-96 max-w-full border rounded"
                   src={outputVideoUrl}
                   controls
+                  autoPlay
+                  playsInline
                 />
-                <a
-                  href={outputVideoUrl}
-                  download="vertical-video.mp4"
-                  className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-center"
-                >
-                  {lang?.download_video || "Download Video"}
-                </a>
+                <div className="flex flex-row gap-2 w-full justify-center">
+                  <a
+                    href={outputVideoUrl}
+                    download="vertical-video.mp4"
+                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-center"
+                  >
+                    {lang?.download_video || "Download Video"}
+                  </a>
+                  
+                  <button
+                    onClick={() => {
+                      // When recording again with the same video, we need to recreate the video URL
+                      // to prevent CORS security issues with canvas
+                      if (videoFile) {
+                        // Revoke existing URLs
+                        if (videoUrl) URL.revokeObjectURL(videoUrl);
+                        if (outputVideoUrl) URL.revokeObjectURL(outputVideoUrl);
+                        
+                        // Create a fresh URL from the same file to reset security context
+                        setVideoUrl(URL.createObjectURL(videoFile));
+                      }
+                      
+                      // Reset state
+                      setOutputVideoUrl('');
+                      setProcessingError('');
+                      setExportProgress(0);
+                      setShowVideoInput(true); // Show the video input again
+                      recordedFramesRef.current = [];
+                      lastCaptureTimeRef.current = 0;
+                      
+                      // Reset video position
+                      if (videoRef.current) {
+                        videoRef.current.currentTime = 0;
+                        videoRef.current.pause();
+                      }
+                      
+                      // Reset mask position by forcing a remount
+                      setVideoResetKey(prevKey => prevKey + 1);
+                      
+                      // Give a small delay before allowing recording to start
+                      // This ensures the video element has time to properly reset
+                      setTimeout(() => {
+                        // Ready for recording again
+                      }, 100);
+                    }}
+                    className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
+                  >
+                    {lang?.record_again || "Record Again"}
+                  </button>
+                </div>
+                
                 <button
                   onClick={() => {
                     setVideoFile(null);
                     setVideoUrl('');
                     setOutputVideoUrl('');
                     setProcessingError('');
+                    setShowVideoInput(true); // Show the video input for the next upload
                     // Reset mask state by incrementing key
                     setVideoResetKey(prevKey => prevKey + 1);
                     // Reset video metadata
