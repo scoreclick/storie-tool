@@ -80,6 +80,21 @@ export default function VideoConverter({ lang }) {
         // Try to get FPS from the video element if available
         const videoElement = videoRef.current;
         
+        // Check if running on iOS Safari - more comprehensive detection
+        const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent) || 
+                         /iPad|iPhone|iPod/.test(navigator.userAgent);
+        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+        
+        // For iOS Safari, use very conservative framerates that work better
+        if (isIOS || isSafari) {
+          console.log('iOS/Safari detected, using conservative framerate');
+          setVideoMetadata(prev => ({
+            ...prev,
+            fps: 15 // Use lower fps for iOS Safari - prevents acceleration
+          }));
+          return;
+        }
+        
         // Use requestVideoFrameCallback if available (Chrome 87+)
         if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
           let lastTime = 0;
@@ -115,7 +130,7 @@ export default function VideoConverter({ lang }) {
           // Start measuring
           videoElement.requestVideoFrameCallback(measureFps);
         } else {
-          // Fallback: use estimated 30fps as default for now, we'll try to detect later
+          // Fallback: use estimated framerate
           console.log('requestVideoFrameCallback not supported, using estimated FPS');
           
           // Use default browser framerate (typically 30 or 60)
@@ -206,10 +221,18 @@ export default function VideoConverter({ lang }) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const mask = maskRef.current;
     
-    // Calculate capture frame rate
+    // Check if running on iOS Safari
+    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent) || 
+                     /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+    
+    // iOS devices need special handling for timing
     const targetFps = getFps();
     const frameInterval = 1000 / targetFps; // Milliseconds between frames
-    const currentTime = video.currentTime * 1000; // Current time in ms
+    
+    // Use real video time * stretching factor to prevent acceleration on iOS
+    const stretchFactor = (isIOS || isSafari) ? 1.5 : 1.0; // Slow down for iOS/Safari
+    const currentTime = video.currentTime * 1000 * stretchFactor; 
     
     // Check if enough time has passed since last capture
     // If lastCaptureTimeRef.current is 0, this is the first frame
@@ -266,11 +289,14 @@ export default function VideoConverter({ lang }) {
       // Capture the frame
       const imageData = ctx.getImageData(0, 0, outputWidth, outputHeight);
       
+      // Store additional timing metadata for iOS devices
       recordedFramesRef.current.push({
         imageData,
         timestamp: currentTime,
+        realTimestamp: video.currentTime * 1000, // Store the original timestamp too
         width: outputWidth,
-        height: outputHeight
+        height: outputHeight,
+        isSlowedDown: (isIOS || isSafari) // Mark frames that need timing adjustment
       });
       
       // Log frame capture at regular intervals for debugging
@@ -323,11 +349,21 @@ export default function VideoConverter({ lang }) {
       canvas.height = height;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       
-      // Fixed bitrate of 2Mbps
-      const bitrate = 2_000_000;
-      const frameRate = getFps(); // Use detected FPS instead of fixed 30
+      // Check if running on iOS Safari - more comprehensive detection
+      const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent) || 
+                       /iPad|iPhone|iPod/.test(navigator.userAgent);
+      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
       
-      console.log(`Using settings: ${frameRate}fps, ${bitrate/1000000}Mbps`);
+      // Adjust settings for iOS
+      const bitrate = (isIOS || isSafari) ? 1_000_000 : 2_000_000; // Lower bitrate for iOS
+      
+      // Much lower framerate for iOS/Safari to prevent acceleration
+      let frameRate = getFps();
+      if (isIOS || isSafari) {
+        frameRate = Math.min(frameRate, 15); // Cap at 15fps for Safari/iOS
+      }
+      
+      console.log(`Using settings: ${frameRate}fps, ${bitrate/1000000}Mbps${(isIOS || isSafari) ? ' (iOS/Safari optimized)' : ''}`);
       
       try {
         // Configure video encoder
@@ -365,6 +401,9 @@ export default function VideoConverter({ lang }) {
         // Keep track of the last timestamp to ensure monotonically increasing timestamps
         let lastTimestamp = -1;
         
+        // Fixed duration between frames in microseconds
+        const frameDuration = 1000000 / frameRate;
+        
         // Process frames one by one
         for (let i = 0; i < totalFrames; i++) {
           // Update progress
@@ -376,37 +415,22 @@ export default function VideoConverter({ lang }) {
           // Draw to canvas
           ctx.putImageData(frame.imageData, 0, 0);
           
-          // Calculate timestamp that ensures monotonically increasing values
-          let timestamp;
-          if (i === 0) {
-            // First frame always starts at 0
-            timestamp = 0;
-          } else {
-            // Calculate based on frame rate (safe option)
-            timestamp = i * (1000000 / frameRate);
-            
-            // Ensure timestamp is greater than the previous one
-            if (timestamp <= lastTimestamp) {
-              timestamp = lastTimestamp + (1000000 / frameRate);
-            }
-          }
+          // Use evenly spaced timestamps to ensure consistent playback speed
+          const timestamp = i * frameDuration;
           
-          // Update the last timestamp
-          lastTimestamp = timestamp;
+          // Ensure timestamp is greater than previous (required by spec)
+          const safeTimestamp = Math.max(timestamp, lastTimestamp + 1);
+          lastTimestamp = safeTimestamp;
           
-          // Log timestamp for debugging
-          if (i % 30 === 0) {
-            console.log(`Frame ${i} timestamp: ${timestamp}, duration: ${1000000 / frameRate}`);
-          }
-          
-          // Create video frame from canvas
+          // Create video frame from canvas with precise timing
           const videoFrame = new VideoFrame(canvas, {
-            timestamp: timestamp,
-            duration: 1000000 / frameRate
+            timestamp: safeTimestamp,
+            duration: frameDuration
           });
           
-          // Key frame every 30 frames or on first frame
-          const keyFrame = i === 0 || i % 30 === 0;
+          // More frequent keyframes for iOS to improve playback
+          const keyFrameInterval = (isIOS || isSafari) ? 10 : 30;
+          const keyFrame = i === 0 || i % keyFrameInterval === 0;
           
           try {
             // Encode frame
@@ -420,9 +444,15 @@ export default function VideoConverter({ lang }) {
           // Clear reference to data
           frames[i].imageData = null;
           
-          // Add a small delay every 10 frames to prevent browser from becoming unresponsive
-          if (i % 10 === 0 && i > 0) {
-            await new Promise(resolve => setTimeout(resolve, 10));
+          // Add small pauses during encoding for iOS devices
+          if (isIOS || isSafari) {
+            if (i % 5 === 0 && i > 0) {
+              await new Promise(resolve => setTimeout(resolve, 30));
+            }
+          } else {
+            if (i % 10 === 0 && i > 0) {
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
           }
         }
         
@@ -560,6 +590,10 @@ export default function VideoConverter({ lang }) {
                   className="max-h-60 max-w-full border rounded"
                   src={outputVideoUrl}
                   controls
+                  playsInline
+                  webkit-playsinline="true"
+                  preload="auto"
+                  controlsList="nodownload nofullscreen noremoteplayback"
                 />
                 <div className="flex flex-row gap-2 justify-center flex-wrap">
                   <a
