@@ -28,6 +28,7 @@ export default function VideoConverter({ lang }) {
   const [processingError, setProcessingError] = useState('');
   const [showVideoInput, setShowVideoInput] = useState(true);
   const [outputFileName, setOutputFileName] = useState('');
+  const [playbackSpeed, setPlaybackSpeed] = useState(0.5);
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -424,33 +425,37 @@ export default function VideoConverter({ lang }) {
       ) : (
         <div className="relative flex flex-col items-center">
           {showVideoInput && (
-            <div className="relative">
-              <VideoPlayer
-                videoRef={videoRef}
-                src={videoUrl}
-                onLoad={handleVideoLoad}
-                onEnded={handleVideoEnded}
-                isPlaying={isPlaying}
-                lang={lang}
-              />
-              
-              {videoMetadata.width > 0 && (
-                <VideoMask
-                  key={videoResetKey} 
-                  maskRef={maskRef}
-                  videoWidth={videoMetadata.width}
-                  videoHeight={videoMetadata.height}
-                  isRecording={isRecording}
+            <>
+              {/* Video and mask container */}
+              <div className="relative">
+                <VideoPlayer
+                  videoRef={videoRef}
+                  src={videoUrl}
+                  onLoad={handleVideoLoad}
+                  onEnded={handleVideoEnded}
+                  isPlaying={isPlaying}
                   lang={lang}
+                  playbackSpeed={playbackSpeed}
                 />
-              )}
-              
-              {/* Hidden canvas for capturing frames */}
-              <canvas 
-                ref={canvasRef} 
-                className="hidden"
-              />
-            </div>
+                
+                {videoMetadata.width > 0 && (
+                  <VideoMask
+                    key={videoResetKey} 
+                    maskRef={maskRef}
+                    videoWidth={videoMetadata.width}
+                    videoHeight={videoMetadata.height}
+                    isRecording={isRecording}
+                    lang={lang}
+                  />
+                )}
+                
+                {/* Hidden canvas for capturing frames */}
+                <canvas 
+                  ref={canvasRef} 
+                  className="hidden"
+                />
+              </div>
+            </>
           )}
           
           {countdown > 0 && (
@@ -463,13 +468,36 @@ export default function VideoConverter({ lang }) {
           
           <div className="mt-4 flex flex-col items-center justify-center gap-4 w-full">
             {!isRecording && !outputVideoUrl && !exportProgress && !processingError && (
-              <button
-                onClick={startRecording}
-                className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
-                disabled={isPlaying}
-              >
-                {t('video.converter.startRecording')}
-              </button>
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={startRecording}
+                  className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                  disabled={isPlaying}
+                >
+                  {t('video.converter.startRecording')}
+                </button>
+                
+                {/* Playback speed control */}
+                {videoMetadata.width > 0 && (
+                  <div className="flex items-center">
+                    <label htmlFor="playback-speed" className="mr-2 text-sm font-medium">
+                      {t('video.player.speed')}:
+                    </label>
+                    <select
+                      id="playback-speed"
+                      value={playbackSpeed}
+                      onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
+                      className="bg-white border border-gray-300 rounded px-2 py-1 text-sm"
+                      disabled={isRecording}
+                    >
+                      <option value="0.25">0.25x</option>
+                      <option value="0.5">0.5x</option>
+                      <option value="0.75">0.75x</option>
+                      <option value="1">1.0x</option>
+                    </select>
+                  </div>
+                )}
+              </div>
             )}
             
             {isRecording && (

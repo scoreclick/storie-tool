@@ -16,7 +16,8 @@
       "errorNotVideo": "Por favor, sube un archivo de video."
     },
     "player": {
-      "loading": "Cargando video..."
+      "loading": "Cargando video...",
+      "speed": "Velocidad"
     },
     "mask": {
       "recording": "Grabando - Arrastra para Mover la Cámara",

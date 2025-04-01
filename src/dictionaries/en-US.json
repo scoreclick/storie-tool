@@ -16,7 +16,8 @@
       "errorNotVideo": "Please upload a video file."
     },
     "player": {
-      "loading": "Loading video..."
+      "loading": "Loading video...",
+      "speed": "Speed"
     },
     "mask": {
       "recording": "Recording - Drag to Move Camera",
