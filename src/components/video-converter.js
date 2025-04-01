@@ -492,6 +492,8 @@ export default function VideoConverter({ lang }) {
                   onClick={() => {
                     setProcessingError('');
                     setExportProgress(0);
+                    // Reset mask position by forcing a remount
+                    setVideoResetKey(prevKey => prevKey + 1);
                   }}
                   className="mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
                 >
