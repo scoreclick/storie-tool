@@ -3,15 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslations } from '@/hooks/use-translations';
 
-export default function VideoMask({ 
-  maskRef, 
-  videoWidth, 
-  videoHeight, 
-  isRecording, 
-  lang,
-  onInteractionStart,
-  onInteractionEnd
-}) {
+export default function VideoMask({ maskRef, videoWidth, videoHeight, isRecording, lang }) {
   const { t } = useTranslations(lang);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
@@ -144,9 +136,6 @@ export default function VideoMask({
     
     setIsDragging(true);
     
-    // Notify parent component about interaction start
-    if (onInteractionStart) onInteractionStart();
-    
     // Calculate drag starting position
     const rect = e.currentTarget.getBoundingClientRect();
     setDragStart({
@@ -166,9 +155,6 @@ export default function VideoMask({
     }
     
     setIsDragging(true);
-    
-    // Notify parent component about interaction start
-    if (onInteractionStart) onInteractionStart();
     
     const touch = e.touches[0];
     const rect = e.currentTarget.getBoundingClientRect();
@@ -217,14 +203,11 @@ export default function VideoMask({
   const handleMouseUp = useCallback(() => {
     setIsDragging(false);
     
-    // Notify parent component about interaction end
-    if (onInteractionEnd) onInteractionEnd();
-    
     // Ensure we have an animation frame running for final positioning
     if (!animationFrameRef.current) {
       animationFrameRef.current = requestAnimationFrame(animatePosition);
     }
-  }, [animatePosition, onInteractionEnd]);
+  }, [animatePosition]);
 
   // Handle touch end event
   const handleTouchEnd = useCallback(() => {
