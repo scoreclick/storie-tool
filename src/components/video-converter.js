@@ -14,7 +14,7 @@ export default function VideoConverter({ lang }) {
     width: 0,
     height: 0,
     duration: 0,
-    fps: 30 // Default to 30fps
+    fps: 0 // Initialize with 0 instead of 30
   });
   const [isPlaying, setIsPlaying] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -33,9 +33,9 @@ export default function VideoConverter({ lang }) {
   
   // Get FPS from video metadata or use a fallback
   const getFps = useCallback(() => {
-    // Default to 30fps, it's safer than attempting to detect
-    return 30;
-  }, []);
+    // Use detected FPS if available, otherwise fall back to 30fps
+    return videoMetadata.fps || 30;
+  }, [videoMetadata.fps]);
   
   // Clean up URLs when component unmounts
   useEffect(() => {
@@ -68,16 +68,74 @@ export default function VideoConverter({ lang }) {
       width: 0,
       height: 0,
       duration: 0,
-      fps: 30
+      fps: 0
     });
   };
   
   // Load video metadata when video is loaded
   const handleVideoLoad = (metadata) => {
+    // Attempt to detect actual FPS from the video
+    const detectFps = () => {
+      if (videoRef.current) {
+        // Try to get FPS from the video element if available
+        const videoElement = videoRef.current;
+        
+        // Use requestVideoFrameCallback if available (Chrome 87+)
+        if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
+          let lastTime = 0;
+          let frameCount = 0;
+          let measuredFps = 0;
+          
+          const measureFps = (now, metadata) => {
+            frameCount++;
+            if (lastTime) {
+              if (frameCount >= 10) {
+                // Calculate FPS after 10 frames for more accuracy
+                const timeDiff = now - lastTime;
+                measuredFps = Math.round((frameCount * 1000) / timeDiff);
+                
+                console.log(`Detected video FPS: ${measuredFps}`);
+                
+                // Update videoMetadata with detected FPS
+                setVideoMetadata(prev => ({
+                  ...prev,
+                  fps: measuredFps > 10 && measuredFps < 120 ? measuredFps : 30 // Validate the detected FPS
+                }));
+                
+                return; // Stop measuring
+              }
+            } else {
+              lastTime = now;
+            }
+            
+            // Continue measuring
+            videoElement.requestVideoFrameCallback(measureFps);
+          };
+          
+          // Start measuring
+          videoElement.requestVideoFrameCallback(measureFps);
+        } else {
+          // Fallback: use estimated 30fps as default for now, we'll try to detect later
+          console.log('requestVideoFrameCallback not supported, using estimated FPS');
+          
+          // Use default browser framerate (typically 30 or 60)
+          setVideoMetadata(prev => ({
+            ...prev,
+            fps: 30
+          }));
+        }
+      }
+    };
+    
+    // Update metadata with sizing info immediately,
+    // and attempt to detect FPS separately
     setVideoMetadata({
       ...metadata,
-      fps: 30 // Fixed frame rate
+      fps: 0 // Will be updated by detectFps
     });
+    
+    // Try to detect FPS
+    detectFps();
   };
   
   // Start recording process with countdown
@@ -154,12 +212,18 @@ export default function VideoConverter({ lang }) {
     const currentTime = video.currentTime * 1000; // Current time in ms
     
     // Check if enough time has passed since last capture
-    const timeSinceLastCapture = currentTime - lastCaptureTimeRef.current;
-    if (timeSinceLastCapture < frameInterval) {
-      return; // Skip this frame - not enough time has passed
+    // If lastCaptureTimeRef.current is 0, this is the first frame
+    if (lastCaptureTimeRef.current > 0) {
+      const timeSinceLastCapture = currentTime - lastCaptureTimeRef.current;
+      
+      // Skip this frame if not enough time has passed
+      // But don't skip if we're more than 2x frameInterval behind (prevents dropping too many frames)
+      if (timeSinceLastCapture < frameInterval && timeSinceLastCapture < frameInterval * 2) {
+        return;
+      }
     }
     
-    // Update last capture time to maintain consistent intervals
+    // Update last capture time
     lastCaptureTimeRef.current = currentTime;
     
     try {
@@ -208,6 +272,11 @@ export default function VideoConverter({ lang }) {
         width: outputWidth,
         height: outputHeight
       });
+      
+      // Log frame capture at regular intervals for debugging
+      if (recordedFramesRef.current.length % 30 === 0) {
+        console.log(`Captured ${recordedFramesRef.current.length} frames, current time: ${currentTime}ms`);
+      }
     } catch (error) {
       console.error('Error capturing frame:', error);
     }
@@ -256,9 +325,9 @@ export default function VideoConverter({ lang }) {
       
       // Fixed bitrate of 2Mbps
       const bitrate = 2_000_000;
-      const frameRate = 30; // Fixed at 30fps for reliable encoding
+      const frameRate = getFps(); // Use detected FPS instead of fixed 30
       
-      console.log(`Using fixed settings: ${frameRate}fps, ${bitrate/1000000}Mbps`);
+      console.log(`Using settings: ${frameRate}fps, ${bitrate/1000000}Mbps`);
       
       try {
         // Configure video encoder
@@ -293,6 +362,9 @@ export default function VideoConverter({ lang }) {
         const totalFrames = frames.length;
         console.log(`Processing ${totalFrames} frames...`);
         
+        // Keep track of the last timestamp to ensure monotonically increasing timestamps
+        let lastTimestamp = -1;
+        
         // Process frames one by one
         for (let i = 0; i < totalFrames; i++) {
           // Update progress
@@ -304,9 +376,32 @@ export default function VideoConverter({ lang }) {
           // Draw to canvas
           ctx.putImageData(frame.imageData, 0, 0);
           
+          // Calculate timestamp that ensures monotonically increasing values
+          let timestamp;
+          if (i === 0) {
+            // First frame always starts at 0
+            timestamp = 0;
+          } else {
+            // Calculate based on frame rate (safe option)
+            timestamp = i * (1000000 / frameRate);
+            
+            // Ensure timestamp is greater than the previous one
+            if (timestamp <= lastTimestamp) {
+              timestamp = lastTimestamp + (1000000 / frameRate);
+            }
+          }
+          
+          // Update the last timestamp
+          lastTimestamp = timestamp;
+          
+          // Log timestamp for debugging
+          if (i % 30 === 0) {
+            console.log(`Frame ${i} timestamp: ${timestamp}, duration: ${1000000 / frameRate}`);
+          }
+          
           // Create video frame from canvas
           const videoFrame = new VideoFrame(canvas, {
-            timestamp: i * (1000000 / frameRate), // Simple sequential timestamps
+            timestamp: timestamp,
             duration: 1000000 / frameRate
           });
           
@@ -365,6 +460,8 @@ export default function VideoConverter({ lang }) {
     };
     
     if (isRecording) {
+      // Use a more consistent approach for frame capture timing
+      // Request the first animation frame immediately
       animationFrameRef.current = requestAnimationFrame(captureFrameLoop);
     } else if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
@@ -411,8 +508,10 @@ export default function VideoConverter({ lang }) {
           </div>
           
           {countdown > 0 && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 text-white text-6xl font-bold z-10">
-              {countdown}
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
+              <div className="bg-blue-600 rounded-full w-20 h-20 flex items-center justify-center text-white text-5xl font-bold shadow-lg">
+                {countdown}
+              </div>
             </div>
           )}
           
@@ -482,7 +581,7 @@ export default function VideoConverter({ lang }) {
                       width: 0,
                       height: 0,
                       duration: 0,
-                      fps: 30
+                      fps: 0
                     });
                   }}
                   className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"

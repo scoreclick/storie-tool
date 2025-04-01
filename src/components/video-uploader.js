@@ -26,6 +26,7 @@ export default function VideoUploader({ onUpload }) {
   };
 
   const handleFileChange = (e) => {
+    e.preventDefault();
     const files = e.target.files;
     if (files.length > 0) {
       handleFile(files[0]);
@@ -72,7 +73,10 @@ export default function VideoUploader({ onUpload }) {
       </p>
       
       <button
-        onClick={() => fileInputRef.current.click()}
+        onClick={(e) => {
+          e.preventDefault();
+          fileInputRef.current.click();
+        }}
         className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
       >
         Select Video
@@ -81,7 +85,8 @@ export default function VideoUploader({ onUpload }) {
       <input
         ref={fileInputRef}
         type="file"
-        accept="video/*"
+        accept=".mp4,.webm,.mov,.avi,video/mp4,video/webm,video/quicktime,video/x-msvideo"
+        capture="false"
         onChange={handleFileChange}
         className="hidden"
       />
