@@ -526,7 +526,7 @@ export default function VideoConverter({ lang }) {
               </button>
             )}
             
-            {isRecording && (
+            {(isRecording || outputVideoUrl) && (
               <button
                 onClick={handleRestartRecording}
                 className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
@@ -561,33 +561,35 @@ export default function VideoConverter({ lang }) {
                   src={outputVideoUrl}
                   controls
                 />
-                <a
-                  href={outputVideoUrl}
-                  download="vertical-video.mp4"
-                  className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-center"
-                >
-                  Download Video
-                </a>
-                <button
-                  onClick={() => {
-                    setVideoFile(null);
-                    setVideoUrl('');
-                    setOutputVideoUrl('');
-                    setProcessingError('');
-                    // Reset mask state by incrementing key
-                    setVideoResetKey(prevKey => prevKey + 1);
-                    // Reset video metadata
-                    setVideoMetadata({
-                      width: 0,
-                      height: 0,
-                      duration: 0,
-                      fps: 0
-                    });
-                  }}
-                  className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
-                >
-                  Convert Another Video
-                </button>
+                <div className="flex flex-row gap-2 justify-center flex-wrap">
+                  <a
+                    href={outputVideoUrl}
+                    download="vertical-video.mp4"
+                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-center"
+                  >
+                    Download Video
+                  </a>
+                  <button
+                    onClick={() => {
+                      setVideoFile(null);
+                      setVideoUrl('');
+                      setOutputVideoUrl('');
+                      setProcessingError('');
+                      // Reset mask state by incrementing key
+                      setVideoResetKey(prevKey => prevKey + 1);
+                      // Reset video metadata
+                      setVideoMetadata({
+                        width: 0,
+                        height: 0,
+                        duration: 0,
+                        fps: 0
+                      });
+                    }}
+                    className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
+                  >
+                    Convert Another Video
+                  </button>
+                </div>
               </div>
             )}
           </div>
