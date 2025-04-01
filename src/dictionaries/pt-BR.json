@@ -1,0 +1,30 @@
+{
+  "metadata": {
+    "title": "Create Next App",
+    "description": "Gerado por create next app"
+  },
+  "home": {
+    "title": "Score Click - Criador de Stories",
+    "description": "Envie um vídeo horizontal e converta-o para formato vertical com movimento de câmera interativo.",
+    "footer": "copyright 2025 - Score Click"
+  },
+  "video": {
+    "uploader": {
+      "dragAndDrop": "Arraste e solte seu vídeo aqui, ou",
+      "selectVideo": "Selecionar Vídeo",
+      "supportedFormats": "Formatos suportados: MP4, WebM, MKV, AVI, etc.",
+      "errorNotVideo": "Por favor, envie um arquivo de vídeo."
+    },
+    "converter": {
+      "browserNotSupported": "A API WebCodecs não é suportada neste navegador. Por favor, use um navegador moderno como Chrome, Edge ou Opera.",
+      "exporting": "Exportando vídeo...",
+      "exportComplete": "Exportação concluída!",
+      "downloadVideo": "Baixar Vídeo",
+      "restartRecording": "Reiniciar Gravação",
+      "startRecording": "Iniciar Gravação",
+      "countdown": "Começando em {seconds}...",
+      "processingVideo": "Processando vídeo...",
+      "errorProcessing": "Erro ao processar vídeo:"
+    }
+  }
+} 
