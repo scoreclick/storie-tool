@@ -27,6 +27,7 @@ export default function VideoConverter({ lang }) {
   const [videoResetKey, setVideoResetKey] = useState(0);
   const [processingError, setProcessingError] = useState('');
   const [showVideoInput, setShowVideoInput] = useState(true);
+  const [outputFileName, setOutputFileName] = useState('');
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -34,6 +35,14 @@ export default function VideoConverter({ lang }) {
   const animationFrameRef = useRef(null);
   const recordedFramesRef = useRef([]);
   const lastCaptureTimeRef = useRef(0);
+  
+  // Generate a random filename for the output video
+  const generateRandomFileName = () => {
+    const date = new Date();
+    const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
+    const randomStr = Math.random().toString(36).substring(2, 10);
+    return `vertical-video-${dateStr}-${randomStr}.mp4`;
+  };
   
   // Get FPS from video metadata
   const getFps = useCallback(() => {
@@ -372,6 +381,7 @@ export default function VideoConverter({ lang }) {
         
         const url = URL.createObjectURL(blob);
         setOutputVideoUrl(url);
+        setOutputFileName(generateRandomFileName());
         setExportProgress(100);
         setShowVideoInput(false); // Hide the video input when export is complete
         
@@ -502,7 +512,7 @@ export default function VideoConverter({ lang }) {
                 <div className="flex flex-row gap-2 w-full justify-center">
                   <a
                     href={outputVideoUrl}
-                    download="vertical-video.mp4"
+                    download={outputFileName}
                     className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-center"
                   >
                     {t('video.converter.downloadVideo')}
