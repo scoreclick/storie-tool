@@ -14,7 +14,7 @@ export default function VideoConverter({ lang }) {
     width: 0,
     height: 0,
     duration: 0,
-    fps: 0 // Initialize with 0 instead of 30
+    fps: 30 // Default to 30fps
   });
   const [isPlaying, setIsPlaying] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -33,9 +33,9 @@ export default function VideoConverter({ lang }) {
   
   // Get FPS from video metadata or use a fallback
   const getFps = useCallback(() => {
-    // Use detected FPS if available, otherwise fall back to 30fps
-    return videoMetadata.fps || 30;
-  }, [videoMetadata.fps]);
+    // Default to 30fps, it's safer than attempting to detect
+    return 30;
+  }, []);
   
   // Clean up URLs when component unmounts
   useEffect(() => {
@@ -68,89 +68,16 @@ export default function VideoConverter({ lang }) {
       width: 0,
       height: 0,
       duration: 0,
-      fps: 0
+      fps: 30
     });
   };
   
   // Load video metadata when video is loaded
   const handleVideoLoad = (metadata) => {
-    // Attempt to detect actual FPS from the video
-    const detectFps = () => {
-      if (videoRef.current) {
-        // Try to get FPS from the video element if available
-        const videoElement = videoRef.current;
-        
-        // Check if running on iOS Safari - more comprehensive detection
-        const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent) || 
-                         /iPad|iPhone|iPod/.test(navigator.userAgent);
-        const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-        
-        // For iOS Safari, use very conservative framerates that work better
-        if (isIOS || isSafari) {
-          console.log('iOS/Safari detected, using conservative framerate');
-          setVideoMetadata(prev => ({
-            ...prev,
-            fps: 15 // Use lower fps for iOS Safari - prevents acceleration
-          }));
-          return;
-        }
-        
-        // Use requestVideoFrameCallback if available (Chrome 87+)
-        if ('requestVideoFrameCallback' in HTMLVideoElement.prototype) {
-          let lastTime = 0;
-          let frameCount = 0;
-          let measuredFps = 0;
-          
-          const measureFps = (now, metadata) => {
-            frameCount++;
-            if (lastTime) {
-              if (frameCount >= 10) {
-                // Calculate FPS after 10 frames for more accuracy
-                const timeDiff = now - lastTime;
-                measuredFps = Math.round((frameCount * 1000) / timeDiff);
-                
-                console.log(`Detected video FPS: ${measuredFps}`);
-                
-                // Update videoMetadata with detected FPS
-                setVideoMetadata(prev => ({
-                  ...prev,
-                  fps: measuredFps > 10 && measuredFps < 120 ? measuredFps : 30 // Validate the detected FPS
-                }));
-                
-                return; // Stop measuring
-              }
-            } else {
-              lastTime = now;
-            }
-            
-            // Continue measuring
-            videoElement.requestVideoFrameCallback(measureFps);
-          };
-          
-          // Start measuring
-          videoElement.requestVideoFrameCallback(measureFps);
-        } else {
-          // Fallback: use estimated framerate
-          console.log('requestVideoFrameCallback not supported, using estimated FPS');
-          
-          // Use default browser framerate (typically 30 or 60)
-          setVideoMetadata(prev => ({
-            ...prev,
-            fps: 30
-          }));
-        }
-      }
-    };
-    
-    // Update metadata with sizing info immediately,
-    // and attempt to detect FPS separately
     setVideoMetadata({
       ...metadata,
-      fps: 0 // Will be updated by detectFps
+      fps: 30 // Fixed frame rate
     });
-    
-    // Try to detect FPS
-    detectFps();
   };
   
   // Start recording process with countdown
@@ -221,32 +148,18 @@ export default function VideoConverter({ lang }) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const mask = maskRef.current;
     
-    // Check if running on iOS Safari
-    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent) || 
-                     /iPad|iPhone|iPod/.test(navigator.userAgent);
-    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
-    
-    // iOS devices need special handling for timing
+    // Calculate capture frame rate
     const targetFps = getFps();
     const frameInterval = 1000 / targetFps; // Milliseconds between frames
-    
-    // Use real video time * stretching factor to prevent acceleration on iOS
-    const stretchFactor = (isIOS || isSafari) ? 1.5 : 1.0; // Slow down for iOS/Safari
-    const currentTime = video.currentTime * 1000 * stretchFactor; 
+    const currentTime = video.currentTime * 1000; // Current time in ms
     
     // Check if enough time has passed since last capture
-    // If lastCaptureTimeRef.current is 0, this is the first frame
-    if (lastCaptureTimeRef.current > 0) {
-      const timeSinceLastCapture = currentTime - lastCaptureTimeRef.current;
-      
-      // Skip this frame if not enough time has passed
-      // But don't skip if we're more than 2x frameInterval behind (prevents dropping too many frames)
-      if (timeSinceLastCapture < frameInterval && timeSinceLastCapture < frameInterval * 2) {
-        return;
-      }
+    const timeSinceLastCapture = currentTime - lastCaptureTimeRef.current;
+    if (timeSinceLastCapture < frameInterval) {
+      return; // Skip this frame - not enough time has passed
     }
     
-    // Update last capture time
+    // Update last capture time to maintain consistent intervals
     lastCaptureTimeRef.current = currentTime;
     
     try {
@@ -289,20 +202,12 @@ export default function VideoConverter({ lang }) {
       // Capture the frame
       const imageData = ctx.getImageData(0, 0, outputWidth, outputHeight);
       
-      // Store additional timing metadata for iOS devices
       recordedFramesRef.current.push({
         imageData,
         timestamp: currentTime,
-        realTimestamp: video.currentTime * 1000, // Store the original timestamp too
         width: outputWidth,
-        height: outputHeight,
-        isSlowedDown: (isIOS || isSafari) // Mark frames that need timing adjustment
+        height: outputHeight
       });
-      
-      // Log frame capture at regular intervals for debugging
-      if (recordedFramesRef.current.length % 30 === 0) {
-        console.log(`Captured ${recordedFramesRef.current.length} frames, current time: ${currentTime}ms`);
-      }
     } catch (error) {
       console.error('Error capturing frame:', error);
     }
@@ -349,21 +254,11 @@ export default function VideoConverter({ lang }) {
       canvas.height = height;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       
-      // Check if running on iOS Safari - more comprehensive detection
-      const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent) || 
-                       /iPad|iPhone|iPod/.test(navigator.userAgent);
-      const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+      // Fixed bitrate of 2Mbps
+      const bitrate = 2_000_000;
+      const frameRate = 30; // Fixed at 30fps for reliable encoding
       
-      // Adjust settings for iOS
-      const bitrate = (isIOS || isSafari) ? 1_000_000 : 2_000_000; // Lower bitrate for iOS
-      
-      // Much lower framerate for iOS/Safari to prevent acceleration
-      let frameRate = getFps();
-      if (isIOS || isSafari) {
-        frameRate = Math.min(frameRate, 15); // Cap at 15fps for Safari/iOS
-      }
-      
-      console.log(`Using settings: ${frameRate}fps, ${bitrate/1000000}Mbps${(isIOS || isSafari) ? ' (iOS/Safari optimized)' : ''}`);
+      console.log(`Using fixed settings: ${frameRate}fps, ${bitrate/1000000}Mbps`);
       
       try {
         // Configure video encoder
@@ -398,12 +293,6 @@ export default function VideoConverter({ lang }) {
         const totalFrames = frames.length;
         console.log(`Processing ${totalFrames} frames...`);
         
-        // Keep track of the last timestamp to ensure monotonically increasing timestamps
-        let lastTimestamp = -1;
-        
-        // Fixed duration between frames in microseconds
-        const frameDuration = 1000000 / frameRate;
-        
         // Process frames one by one
         for (let i = 0; i < totalFrames; i++) {
           // Update progress
@@ -415,22 +304,14 @@ export default function VideoConverter({ lang }) {
           // Draw to canvas
           ctx.putImageData(frame.imageData, 0, 0);
           
-          // Use evenly spaced timestamps to ensure consistent playback speed
-          const timestamp = i * frameDuration;
-          
-          // Ensure timestamp is greater than previous (required by spec)
-          const safeTimestamp = Math.max(timestamp, lastTimestamp + 1);
-          lastTimestamp = safeTimestamp;
-          
-          // Create video frame from canvas with precise timing
+          // Create video frame from canvas
           const videoFrame = new VideoFrame(canvas, {
-            timestamp: safeTimestamp,
-            duration: frameDuration
+            timestamp: i * (1000000 / frameRate), // Simple sequential timestamps
+            duration: 1000000 / frameRate
           });
           
-          // More frequent keyframes for iOS to improve playback
-          const keyFrameInterval = (isIOS || isSafari) ? 10 : 30;
-          const keyFrame = i === 0 || i % keyFrameInterval === 0;
+          // Key frame every 30 frames or on first frame
+          const keyFrame = i === 0 || i % 30 === 0;
           
           try {
             // Encode frame
@@ -444,15 +325,9 @@ export default function VideoConverter({ lang }) {
           // Clear reference to data
           frames[i].imageData = null;
           
-          // Add small pauses during encoding for iOS devices
-          if (isIOS || isSafari) {
-            if (i % 5 === 0 && i > 0) {
-              await new Promise(resolve => setTimeout(resolve, 30));
-            }
-          } else {
-            if (i % 10 === 0 && i > 0) {
-              await new Promise(resolve => setTimeout(resolve, 10));
-            }
+          // Add a small delay every 10 frames to prevent browser from becoming unresponsive
+          if (i % 10 === 0 && i > 0) {
+            await new Promise(resolve => setTimeout(resolve, 10));
           }
         }
         
@@ -490,8 +365,6 @@ export default function VideoConverter({ lang }) {
     };
     
     if (isRecording) {
-      // Use a more consistent approach for frame capture timing
-      // Request the first animation frame immediately
       animationFrameRef.current = requestAnimationFrame(captureFrameLoop);
     } else if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
@@ -556,7 +429,7 @@ export default function VideoConverter({ lang }) {
               </button>
             )}
             
-            {(isRecording || outputVideoUrl) && (
+            {isRecording && (
               <button
                 onClick={handleRestartRecording}
                 className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
@@ -590,40 +463,34 @@ export default function VideoConverter({ lang }) {
                   className="max-h-60 max-w-full border rounded"
                   src={outputVideoUrl}
                   controls
-                  playsInline
-                  webkit-playsinline="true"
-                  preload="auto"
-                  controlsList="nodownload nofullscreen noremoteplayback"
                 />
-                <div className="flex flex-row gap-2 justify-center flex-wrap">
-                  <a
-                    href={outputVideoUrl}
-                    download="vertical-video.mp4"
-                    className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-center"
-                  >
-                    Download Video
-                  </a>
-                  <button
-                    onClick={() => {
-                      setVideoFile(null);
-                      setVideoUrl('');
-                      setOutputVideoUrl('');
-                      setProcessingError('');
-                      // Reset mask state by incrementing key
-                      setVideoResetKey(prevKey => prevKey + 1);
-                      // Reset video metadata
-                      setVideoMetadata({
-                        width: 0,
-                        height: 0,
-                        duration: 0,
-                        fps: 0
-                      });
-                    }}
-                    className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
-                  >
-                    Convert Another Video
-                  </button>
-                </div>
+                <a
+                  href={outputVideoUrl}
+                  download="vertical-video.mp4"
+                  className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-center"
+                >
+                  Download Video
+                </a>
+                <button
+                  onClick={() => {
+                    setVideoFile(null);
+                    setVideoUrl('');
+                    setOutputVideoUrl('');
+                    setProcessingError('');
+                    // Reset mask state by incrementing key
+                    setVideoResetKey(prevKey => prevKey + 1);
+                    // Reset video metadata
+                    setVideoMetadata({
+                      width: 0,
+                      height: 0,
+                      duration: 0,
+                      fps: 30
+                    });
+                  }}
+                  className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
+                >
+                  Convert Another Video
+                </button>
               </div>
             )}
           </div>
