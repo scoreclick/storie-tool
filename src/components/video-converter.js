@@ -177,6 +177,14 @@ export default function VideoConverter() {
     if (!frames.length) return;
     
     try {
+      // Check if WebCodecs API is available
+      if (typeof window !== 'undefined' && !('VideoEncoder' in window)) {
+        throw new Error(
+          'WebCodecs API is not supported in this browser. ' +
+          'Please use a modern browser like Chrome, Edge, or Opera.'
+        );
+      }
+      
       // Create canvas for encoding
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
