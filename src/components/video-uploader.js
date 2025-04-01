@@ -86,7 +86,6 @@ export default function VideoUploader({ onUpload }) {
         ref={fileInputRef}
         type="file"
         accept=".mp4,.webm,.mov,.avi,video/mp4,video/webm,video/quicktime,video/x-msvideo"
-        capture="false"
         onChange={handleFileChange}
         className="hidden"
       />
