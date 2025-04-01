@@ -1,8 +1,10 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
+import { useTranslations } from '@/hooks/use-translations';
 
-export default function VideoMask({ maskRef, videoWidth, videoHeight, isRecording }) {
+export default function VideoMask({ maskRef, videoWidth, videoHeight, isRecording, lang }) {
+  const { t } = useTranslations(lang);
   const [position, setPosition] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
@@ -168,11 +170,11 @@ export default function VideoMask({ maskRef, videoWidth, videoHeight, isRecordin
       >
         {isRecording ? (
           <div className="bg-red-500 text-white text-xs rounded-sm px-2 py-1 whitespace-nowrap">
-            Recording - Drag to Move Camera
+            {t('video.mask.recording')}
           </div>
         ) : (
           <div className="bg-black bg-opacity-50 text-white text-xs rounded-sm px-2 py-1 whitespace-nowrap">
-            Drag to position
+            {t('video.mask.dragToPosition')}
           </div>
         )}
       </div>

@@ -15,6 +15,13 @@
       "supportedFormats": "Supported formats: MP4, WebM, MKV, AVI, etc.",
       "errorNotVideo": "Please upload a video file."
     },
+    "player": {
+      "loading": "Loading video..."
+    },
+    "mask": {
+      "recording": "Recording - Drag to Move Camera",
+      "dragToPosition": "Drag to position"
+    },
     "converter": {
       "browserNotSupported": "WebCodecs API is not supported in this browser. Please use a modern browser like Chrome, Edge, or Opera.",
       "exporting": "Exporting video...",
@@ -24,7 +31,11 @@
       "startRecording": "Start Recording",
       "countdown": "Starting in {seconds}...",
       "processingVideo": "Processing video...",
-      "errorProcessing": "Error processing video:"
+      "errorProcessing": "Error processing video:",
+      "errorEncoding": "Encoding error:",
+      "convertAnotherVideo": "Convert Another Video",
+      "recordAgain": "Record Again",
+      "tryAgain": "Try Again"
     }
   }
 } 

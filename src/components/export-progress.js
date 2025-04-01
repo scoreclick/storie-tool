@@ -1,10 +1,14 @@
 'use client';
 
-export default function ExportProgress({ progress }) {
+import { useTranslations } from '@/hooks/use-translations';
+
+export default function ExportProgress({ progress, lang }) {
+  const { t } = useTranslations(lang);
+  
   return (
     <div className="w-full">
       <div className="flex justify-between mb-1">
-        <span className="text-sm font-medium">Exporting video...</span>
+        <span className="text-sm font-medium">{t('video.converter.exporting')}</span>
         <span className="text-sm font-medium">{progress}%</span>
       </div>
       <div className="w-full bg-gray-200 rounded-full h-2.5">
@@ -14,7 +18,7 @@ export default function ExportProgress({ progress }) {
         ></div>
       </div>
       <p className="mt-2 text-xs text-gray-500">
-        Please wait while your video is being processed.
+        {t('video.converter.processingVideo')}
       </p>
     </div>
   );

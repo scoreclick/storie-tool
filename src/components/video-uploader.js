@@ -1,8 +1,10 @@
 'use client';
 
 import { useState, useRef } from 'react';
+import { useTranslations } from '@/hooks/use-translations';
 
-export default function VideoUploader({ onUpload }) {
+export default function VideoUploader({ onUpload, lang }) {
+  const { t } = useTranslations(lang);
   const [isDragging, setIsDragging] = useState(false);
   const fileInputRef = useRef(null);
 
@@ -35,7 +37,7 @@ export default function VideoUploader({ onUpload }) {
   const handleFile = (file) => {
     // Check if it's a video file
     if (!file.type.startsWith('video/')) {
-      alert('Please upload a video file.');
+      alert(t('video.uploader.errorNotVideo'));
       return;
     }
     
@@ -68,14 +70,14 @@ export default function VideoUploader({ onUpload }) {
       </svg>
       
       <p className="mb-4 text-center text-gray-600">
-        Drag and drop your video here, or
+        {t('video.uploader.dragAndDrop')}
       </p>
       
       <button
         onClick={() => fileInputRef.current.click()}
         className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
       >
-        Select Video
+        {t('video.uploader.selectVideo')}
       </button>
       
       <input
@@ -87,7 +89,7 @@ export default function VideoUploader({ onUpload }) {
       />
       
       <p className="mt-4 text-xs text-gray-500 text-center">
-        Supported formats: MP4, WebM, MKV, AVI, etc.
+        {t('video.uploader.supportedFormats')}
       </p>
     </div>
   );

@@ -6,8 +6,20 @@ import VideoUploader from './video-uploader';
 import VideoPlayer from './video-player';
 import VideoMask from './video-mask';
 import ExportProgress from './export-progress';
+import { useTranslations } from '@/hooks/use-translations';
 
 export default function VideoConverter({ lang }) {
+  const { t, isLoading } = useTranslations(lang);
+  
+  // Debug logging for translations
+  useEffect(() => {
+    console.log(`VideoConverter received lang: ${lang}`);
+    if (!isLoading) {
+      console.log('Testing recordAgain translation:', t('video.converter.recordAgain'));
+      console.log('Testing convertAnotherVideo translation:', t('video.converter.convertAnotherVideo'));
+    }
+  }, [lang, isLoading, t]);
+
   const [videoFile, setVideoFile] = useState(null);
   const [videoUrl, setVideoUrl] = useState('');
   const [videoMetadata, setVideoMetadata] = useState({
@@ -223,10 +235,7 @@ export default function VideoConverter({ lang }) {
       
       // Check if WebCodecs API is available
       if (typeof window !== 'undefined' && !('VideoEncoder' in window)) {
-        throw new Error(
-          'WebCodecs API is not supported in this browser. ' +
-          'Please use a modern browser like Chrome, Edge, or Opera.'
-        );
+        throw new Error(t('video.converter.browserNotSupported'));
       }
       
       // Get frame dimensions from the first frame
@@ -263,7 +272,7 @@ export default function VideoConverter({ lang }) {
           output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
           error: (e) => {
             console.error('Encoder error:', e);
-            setProcessingError(`Encoding error: ${e.message}`);
+            setProcessingError(t('video.converter.errorEncoding') + ' ' + e.message);
           }
         });
         
@@ -377,13 +386,13 @@ export default function VideoConverter({ lang }) {
         
       } catch (encoderError) {
         console.error('Encoder setup/processing error:', encoderError);
-        throw new Error(`Video encoding failed: ${encoderError.message}`);
+        throw new Error(t('video.converter.errorProcessing') + ' ' + encoderError.message);
       }
       
     } catch (error) {
-      console.error('Export error:', error);
+      console.error('Error exporting video:', error);
+      setProcessingError(t('video.converter.errorProcessing') + ' ' + error.message);
       setExportProgress(0);
-      setProcessingError(`Failed to export video: ${error.message}`);
     }
   };
   
@@ -431,6 +440,7 @@ export default function VideoConverter({ lang }) {
                   videoWidth={videoMetadata.width}
                   videoHeight={videoMetadata.height}
                   isRecording={isRecording}
+                  lang={lang}
                 />
               )}
               
@@ -457,7 +467,7 @@ export default function VideoConverter({ lang }) {
                 className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
                 disabled={isPlaying}
               >
-                {lang?.start_recording || "Start Recording"}
+                {t('video.converter.startRecording')}
               </button>
             )}
             
@@ -466,12 +476,12 @@ export default function VideoConverter({ lang }) {
                 onClick={handleRestartRecording}
                 className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
               >
-                {lang?.restart_recording || "Restart Recording"}
+                {t('video.converter.restartRecording')}
               </button>
             )}
             
             {exportProgress > 0 && !outputVideoUrl && !processingError && (
-              <ExportProgress progress={exportProgress} />
+              <ExportProgress progress={exportProgress} lang={lang} />
             )}
             
             {processingError && (
@@ -484,7 +494,7 @@ export default function VideoConverter({ lang }) {
                   }}
                   className="mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
                 >
-                  {lang?.try_again || "Try Again"}
+                  {t('video.converter.tryAgain')}
                 </button>
               </div>
             )}
@@ -504,7 +514,7 @@ export default function VideoConverter({ lang }) {
                     download="vertical-video.mp4"
                     className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-center"
                   >
-                    {lang?.download_video || "Download Video"}
+                    {t('video.converter.downloadVideo')}
                   </a>
                   
                   <button
@@ -545,7 +555,7 @@ export default function VideoConverter({ lang }) {
                     }}
                     className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
                   >
-                    {lang?.record_again || "Record Again"}
+                    {t('video.converter.recordAgain')}
                   </button>
                 </div>
                 
@@ -568,9 +578,13 @@ export default function VideoConverter({ lang }) {
                   }}
                   className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
                 >
-                  {lang?.convert_another || "Convert Another Video"}
+                  {t('video.converter.convertAnotherVideo')}
                 </button>
               </div>
+            )}
+            
+            {countdown > 0 && (
+              <div className="text-2xl font-bold">{t('video.converter.countdown', { seconds: countdown })}</div>
             )}
           </div>
         </div>

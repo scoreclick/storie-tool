@@ -1,8 +1,10 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useTranslations } from '@/hooks/use-translations';
 
 export default function VideoPlayer({ videoRef, src, onLoad, onEnded, isPlaying, lang }) {
+  const { t } = useTranslations(lang);
   const [isLoaded, setIsLoaded] = useState(false);
   
   useEffect(() => {
@@ -47,7 +49,7 @@ export default function VideoPlayer({ videoRef, src, onLoad, onEnded, isPlaying,
       
       {!isLoaded && (
         <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 text-white">
-          {lang?.loading_video || "Loading video..."}
+          {t('video.player.loading')}
         </div>
       )}
     </div>

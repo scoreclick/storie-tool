@@ -1,6 +1,6 @@
 {
   "metadata": {
-    "title": "Storie Tool by Score Click",
+    "title": "Herramienta de Stories de Score Click",
     "description": "Convierte tu video horizontal a un video vertical para Stories controlando la cámara con tu dedo."
   },
   "home": {
@@ -15,6 +15,13 @@
       "supportedFormats": "Formatos soportados: MP4, WebM, MKV, AVI, etc.",
       "errorNotVideo": "Por favor, sube un archivo de video."
     },
+    "player": {
+      "loading": "Cargando video..."
+    },
+    "mask": {
+      "recording": "Grabando - Arrastra para Mover la Cámara",
+      "dragToPosition": "Arrastra para posicionar"
+    },
     "converter": {
       "browserNotSupported": "La API WebCodecs no es compatible con este navegador. Por favor, usa un navegador moderno como Chrome, Edge u Opera.",
       "exporting": "Exportando video...",
@@ -24,7 +31,11 @@
       "startRecording": "Iniciar Grabación",
       "countdown": "Comenzando en {seconds}...",
       "processingVideo": "Procesando video...",
-      "errorProcessing": "Error al procesar el video:"
+      "errorProcessing": "Error al procesar el video:",
+      "errorEncoding": "Error de codificación:",
+      "convertAnotherVideo": "Convertir Otro Video",
+      "recordAgain": "Grabar de Nuevo",
+      "tryAgain": "Intentar de Nuevo"
     }
   }
 } 
