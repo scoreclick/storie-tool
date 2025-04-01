@@ -31,6 +31,7 @@ export default function VideoConverter({ lang }) {
   const [playbackSpeed, setPlaybackSpeed] = useState(0.5);
   const [frameRate, setFrameRate] = useState(15); // Default to 15fps
   const lastFrameTimeRef = useRef(0);
+  const [maskInteracting, setMaskInteracting] = useState(false);
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -39,6 +40,7 @@ export default function VideoConverter({ lang }) {
   const recordedFramesRef = useRef([]);
   const lastCaptureTimeRef = useRef(0);
   const frameBufferSizeRef = useRef(5); // Fixed buffer size
+  const interactionTimeoutRef = useRef(null);
   
   // Generate a random filename for the output video
   const generateRandomFileName = () => {
@@ -454,8 +456,17 @@ export default function VideoConverter({ lang }) {
       const elapsed = now - lastFrameTimeRef.current;
       const frameInterval = 1000 / frameRate;
       
-      if (elapsed >= frameInterval) {
-        lastFrameTimeRef.current = now - (elapsed % frameInterval);
+      // If mask is being interacted with, lower the capture priority by increasing frame interval
+      const effectiveFrameInterval = maskInteracting ? frameInterval * 2 : frameInterval;
+      
+      if (elapsed >= effectiveFrameInterval) {
+        lastFrameTimeRef.current = now - (elapsed % effectiveFrameInterval);
+        
+        // Skip capture entirely during active mask interaction to prioritize UI responsiveness
+        if (maskInteracting) {
+          animationFrameRef.current = requestAnimationFrame(captureFrameLoop);
+          return;
+        }
         
         // Instead of capturing frames directly, add them to our buffer
         if (isRecording && videoRef.current && canvasRef.current && maskRef.current) {
@@ -509,8 +520,8 @@ export default function VideoConverter({ lang }) {
             // Update last capture time
             lastCaptureTimeRef.current = currentTime;
             
-            // Process the buffer when it reaches the threshold size
-            if (frameBuffer.length >= frameBufferSizeRef.current) {
+            // Process the buffer when it reaches the threshold size, but only if not interacting with mask
+            if (frameBuffer.length >= frameBufferSizeRef.current && !maskInteracting) {
               processFrameBuffer();
             }
           } catch (error) {
@@ -526,37 +537,56 @@ export default function VideoConverter({ lang }) {
     const processFrameBuffer = () => {
       if (!frameBuffer.length) return;
       
+      // If mask interaction started during processing, defer processing
+      if (maskInteracting) return;
+      
       const canvas = canvasRef.current;
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       const video = videoRef.current;
       
-      // Process each frame in the buffer
-      for (const frameData of frameBuffer) {
-        // Set canvas dimensions
-        canvas.width = frameData.width;
-        canvas.height = frameData.height;
+      // Use idle callback if available to prioritize UI
+      const processFrames = () => {
+        // Process each frame in the buffer
+        for (const frameData of frameBuffer) {
+          // If mask interaction started during processing, defer remaining frames
+          if (maskInteracting) break;
+          
+          // Set canvas dimensions
+          canvas.width = frameData.width;
+          canvas.height = frameData.height;
+          
+          // Draw the frame to the canvas
+          ctx.drawImage(
+            video,
+            frameData.sourceX, frameData.sourceY, frameData.sourceWidth, frameData.sourceHeight,
+            0, 0, canvas.width, canvas.height
+          );
+          
+          // Capture the frame
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          
+          // Add to recorded frames
+          recordedFramesRef.current.push({
+            imageData,
+            timestamp: frameData.timestamp,
+            width: canvas.width,
+            height: canvas.height
+          });
+        }
         
-        // Draw the frame to the canvas
-        ctx.drawImage(
-          video,
-          frameData.sourceX, frameData.sourceY, frameData.sourceWidth, frameData.sourceHeight,
-          0, 0, canvas.width, canvas.height
-        );
-        
-        // Capture the frame
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        
-        // Add to recorded frames
-        recordedFramesRef.current.push({
-          imageData,
-          timestamp: frameData.timestamp,
-          width: canvas.width,
-          height: canvas.height
-        });
-      }
+        // Only clear the buffer if we processed all frames
+        if (!maskInteracting) {
+          frameBuffer = [];
+        }
+      };
       
-      // Clear the buffer after processing
-      frameBuffer = [];
+      // Use requestIdleCallback if available to process frames during idle time
+      if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+        window.requestIdleCallback(processFrames, { timeout: 50 });
+      } else {
+        // Fallback to setTimeout to at least yield the main thread
+        setTimeout(processFrames, 0);
+      }
     };
     
     if (isRecording) {
@@ -593,7 +623,34 @@ export default function VideoConverter({ lang }) {
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [isRecording, frameRate, playbackSpeed]);
+  }, [isRecording, frameRate, playbackSpeed, maskInteracting]);
+
+  // Handle mask interaction events
+  const handleMaskInteractionStart = useCallback(() => {
+    setMaskInteracting(true);
+    
+    // Clear any existing timeout
+    if (interactionTimeoutRef.current) {
+      clearTimeout(interactionTimeoutRef.current);
+    }
+  }, []);
+  
+  const handleMaskInteractionEnd = useCallback(() => {
+    // Set a short delay before processing resumes to ensure UI remains responsive
+    // after interaction ends
+    interactionTimeoutRef.current = setTimeout(() => {
+      setMaskInteracting(false);
+    }, 100);
+  }, []);
+  
+  // Cleanup interaction timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (interactionTimeoutRef.current) {
+        clearTimeout(interactionTimeoutRef.current);
+      }
+    };
+  }, []);
 
   return (
     <div className="w-full max-w-4xl mx-auto">
@@ -623,6 +680,8 @@ export default function VideoConverter({ lang }) {
                     videoHeight={videoMetadata.height}
                     isRecording={isRecording}
                     lang={lang}
+                    onInteractionStart={handleMaskInteractionStart}
+                    onInteractionEnd={handleMaskInteractionEnd}
                   />
                 )}
                 
