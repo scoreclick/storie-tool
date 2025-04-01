@@ -9,17 +9,8 @@ import ExportProgress from './export-progress';
 import { useTranslations } from '@/hooks/use-translations';
 
 export default function VideoConverter({ lang }) {
-  const { t, isLoading } = useTranslations(lang);
+  const { t } = useTranslations(lang);
   
-  // Debug logging for translations
-  useEffect(() => {
-    console.log(`VideoConverter received lang: ${lang}`);
-    if (!isLoading) {
-      console.log('Testing recordAgain translation:', t('video.converter.recordAgain'));
-      console.log('Testing convertAnotherVideo translation:', t('video.converter.convertAnotherVideo'));
-    }
-  }, [lang, isLoading, t]);
-
   const [videoFile, setVideoFile] = useState(null);
   const [videoUrl, setVideoUrl] = useState('');
   const [videoMetadata, setVideoMetadata] = useState({
