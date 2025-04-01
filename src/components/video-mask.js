@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useTranslations } from '@/hooks/use-translations';
 
 export default function VideoMask({ maskRef, videoWidth, videoHeight, isRecording, lang }) {
@@ -12,6 +12,14 @@ export default function VideoMask({ maskRef, videoWidth, videoHeight, isRecordin
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   // Track whether dimensions have been initialized
   const hasInitialized = useRef(false);
+  // Ref to store the current position for animation frame updates
+  const positionRef = useRef({ x: 0, y: 0 });
+  // Ref to store the target position (where we want to end up)
+  const targetPositionRef = useRef({ x: 0, y: 0 });
+  // Ref to store the animation frame ID
+  const animationFrameRef = useRef(null);
+  // Ref to track the last time position was updated
+  const lastUpdateTimeRef = useRef(0);
 
   // Calculate mask dimensions based on actual rendered video size
   useEffect(() => {
@@ -39,7 +47,11 @@ export default function VideoMask({ maskRef, videoWidth, videoHeight, isRecordin
       
       // Center the mask horizontally
       const initialX = (containerRect.width - evenWidth) / 2;
+      
+      // Initialize all position refs
       setPosition({ x: initialX, y: 0 });
+      positionRef.current = { x: initialX, y: 0 };
+      targetPositionRef.current = { x: initialX, y: 0 };
       
       // Mark as initialized
       hasInitialized.current = true;
@@ -59,9 +71,69 @@ export default function VideoMask({ maskRef, videoWidth, videoHeight, isRecordin
     return () => window.removeEventListener('resize', updateDimensions);
   }, [videoWidth, videoHeight]);
 
+  // Simple linear interpolation function for smooth movement
+  const lerp = (start, end, factor) => start * (1 - factor) + end * factor;
+  
+  // Update animation with linear interpolation - much more stable than spring physics
+  const animatePosition = useCallback(() => {
+    // Calculate the distance to target
+    const dx = targetPositionRef.current.x - positionRef.current.x;
+    
+    // If we're very close to target, just snap to the final position
+    if (Math.abs(dx) < 0.5) {
+      positionRef.current.x = targetPositionRef.current.x;
+      setPosition({ x: targetPositionRef.current.x, y: 0 });
+      animationFrameRef.current = null;
+      return;
+    }
+    
+    // Use lerp for smooth movement - higher factor = faster movement
+    // Use different interpolation factors for dragging vs. releasing
+    const interpFactor = isDragging ? 0.4 : 0.2;
+    
+    // Update position with interpolation
+    positionRef.current.x = lerp(
+      positionRef.current.x, 
+      targetPositionRef.current.x, 
+      interpFactor
+    );
+    
+    // Update the React state for UI
+    setPosition({ 
+      x: positionRef.current.x, 
+      y: 0 
+    });
+    
+    // Continue animation
+    animationFrameRef.current = requestAnimationFrame(animatePosition);
+  }, [isDragging]);
+
+  // Update target position with minimal throttling
+  const updateTargetPosition = useCallback((newPosition) => {
+    const now = performance.now();
+    // Use a reasonable throttle (16ms ≈ 60fps) for position updates
+    if (now - lastUpdateTimeRef.current < 16) return;
+    lastUpdateTimeRef.current = now;
+    
+    // Update the target position directly
+    targetPositionRef.current = newPosition;
+    
+    // Start animation loop if not already running
+    if (!animationFrameRef.current) {
+      animationFrameRef.current = requestAnimationFrame(animatePosition);
+    }
+  }, [animatePosition]);
+
   // Handle mouse down event
   const handleMouseDown = (e) => {
     e.preventDefault();
+    
+    // Stop any current animations to ensure responsiveness
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    
     setIsDragging(true);
     
     // Calculate drag starting position
@@ -75,6 +147,13 @@ export default function VideoMask({ maskRef, videoWidth, videoHeight, isRecordin
   // Handle touch start event
   const handleTouchStart = (e) => {
     e.preventDefault();
+    
+    // Stop any current animations to ensure responsiveness
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    
     setIsDragging(true);
     
     const touch = e.touches[0];
@@ -87,54 +166,68 @@ export default function VideoMask({ maskRef, videoWidth, videoHeight, isRecordin
   };
 
   // Handle mouse move event
-  const handleMouseMove = (e) => {
+  const handleMouseMove = useCallback((e) => {
     if (!isDragging || !containerRef.current) return;
     
     // Calculate new position
     const containerRect = containerRef.current.getBoundingClientRect();
     let newX = e.clientX - containerRect.left - dragStart.x;
     
-    // Ensure mask stays within video boundaries
+    // Simple clamping to boundaries instead of elasticity
     newX = Math.max(0, Math.min(newX, containerRect.width - dimensions.width));
     
-    setPosition({
+    updateTargetPosition({
       x: newX,
       y: 0 // Mask always stays at the top vertically
     });
-  };
+  }, [isDragging, dragStart, dimensions.width, updateTargetPosition]);
 
   // Handle touch move event
-  const handleTouchMove = (e) => {
+  const handleTouchMove = useCallback((e) => {
     if (!isDragging || !containerRef.current) return;
     
     const touch = e.touches[0];
     const containerRect = containerRef.current.getBoundingClientRect();
     let newX = touch.clientX - containerRect.left - dragStart.x;
     
-    // Ensure mask stays within video boundaries
+    // Simple clamping to boundaries instead of elasticity
     newX = Math.max(0, Math.min(newX, containerRect.width - dimensions.width));
     
-    setPosition({
+    updateTargetPosition({
       x: newX,
       y: 0 // Mask always stays at the top vertically
     });
-  };
+  }, [isDragging, dragStart, dimensions.width, updateTargetPosition]);
 
   // Handle mouse up event
-  const handleMouseUp = () => {
+  const handleMouseUp = useCallback(() => {
     setIsDragging(false);
-  };
+    
+    // Ensure we have an animation frame running for final positioning
+    if (!animationFrameRef.current) {
+      animationFrameRef.current = requestAnimationFrame(animatePosition);
+    }
+  }, [animatePosition]);
 
   // Handle touch end event
-  const handleTouchEnd = () => {
-    setIsDragging(false);
-  };
+  const handleTouchEnd = useCallback(() => {
+    handleMouseUp(); // Reuse the same logic
+  }, [handleMouseUp]);
+
+  // Cleanup animation frame on unmount
+  useEffect(() => {
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+    };
+  }, []);
 
   // Add and remove event listeners
   useEffect(() => {
     if (isDragging) {
       // Mouse events
-      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mousemove', handleMouseMove, { passive: false });
       document.addEventListener('mouseup', handleMouseUp);
       
       // Touch events
@@ -153,19 +246,19 @@ export default function VideoMask({ maskRef, videoWidth, videoHeight, isRecordin
       document.removeEventListener('touchend', handleTouchEnd);
       document.removeEventListener('touchcancel', handleTouchEnd);
     };
-  }, [isDragging]);
+  }, [isDragging, handleMouseMove, handleMouseUp, handleTouchMove, handleTouchEnd]);
 
   return (
     <div 
       ref={containerRef}
-      className="absolute top-0 left-0 overflow-hidden w-full h-full"
+      className="absolute top-0 left-0 overflow-hidden w-full h-full touch-none"
     >
       {/* Message displayed above the mask */}
       <div 
-        className="absolute z-10 transform -translate-y-8"
+        className="absolute z-10 transform -translate-y-8 pointer-events-none"
         style={{ 
           left: `${position.x + dimensions.width/2 - 75}px`, 
-          top: `${position.y}px` 
+          top: `${position.y}px`
         }}
       >
         {isRecording ? (
@@ -187,10 +280,11 @@ export default function VideoMask({ maskRef, videoWidth, videoHeight, isRecordin
         style={{
           width: dimensions.width ? `${dimensions.width}px` : '0',
           height: dimensions.height ? `${dimensions.height}px` : '0',
-          left: `${position.x}px`,
-          top: `${position.y}px`,
+          transform: `translate3d(${position.x}px, ${position.y}px, 0)`,
           backgroundColor: 'rgba(255, 255, 0, 0.1)',
-          boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.5)'
+          boxShadow: '0 0 0 9999px rgba(0, 0, 0, 0.5)',
+          willChange: 'transform', // Optimize for animations
+          touchAction: 'none' // Prevent browser handling of all touch gestures
         }}
         onMouseDown={handleMouseDown}
         onTouchStart={handleTouchStart}

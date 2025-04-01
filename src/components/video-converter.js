@@ -29,6 +29,8 @@ export default function VideoConverter({ lang }) {
   const [showVideoInput, setShowVideoInput] = useState(true);
   const [outputFileName, setOutputFileName] = useState('');
   const [playbackSpeed, setPlaybackSpeed] = useState(0.5);
+  const [frameRate, setFrameRate] = useState(15); // Default to 15fps
+  const lastFrameTimeRef = useRef(0);
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -401,7 +403,15 @@ export default function VideoConverter({ lang }) {
   // Set up animation frame for frame capture
   useEffect(() => {
     const captureFrameLoop = () => {
-      captureFrame();
+      const now = performance.now();
+      const elapsed = now - lastFrameTimeRef.current;
+      const frameInterval = 1000 / frameRate;
+      
+      if (elapsed >= frameInterval) {
+        lastFrameTimeRef.current = now - (elapsed % frameInterval);
+        captureFrame();
+      }
+      
       animationFrameRef.current = requestAnimationFrame(captureFrameLoop);
     };
     
@@ -416,7 +426,7 @@ export default function VideoConverter({ lang }) {
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [isRecording, captureFrame]);
+  }, [isRecording, captureFrame, frameRate]);
 
   return (
     <div className="w-full max-w-4xl mx-auto">
