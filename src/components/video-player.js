@@ -2,9 +2,9 @@
 
 import { useEffect, useState } from 'react';
 
-export default function VideoPlayer({ videoRef, src, onLoad, onEnded, isPlaying }) {
+export default function VideoPlayer({ videoRef, src, onLoad, onEnded, isPlaying, lang }) {
   const [isLoaded, setIsLoaded] = useState(false);
-
+  
   useEffect(() => {
     if (videoRef.current) {
       if (isPlaying) {
@@ -21,11 +21,16 @@ export default function VideoPlayer({ videoRef, src, onLoad, onEnded, isPlaying 
     const video = videoRef.current;
     setIsLoaded(true);
     
-    onLoad({
+    // Just pass the basic metadata
+    const metadata = {
       width: video.videoWidth,
       height: video.videoHeight,
-      duration: video.duration
-    });
+      duration: video.duration,
+      fps: 30 // We're always using 30fps for output now
+    };
+    
+    // Pass metadata to parent component
+    onLoad(metadata);
   };
 
   return (
@@ -37,13 +42,11 @@ export default function VideoPlayer({ videoRef, src, onLoad, onEnded, isPlaying 
         onLoadedMetadata={handleLoadedMetadata}
         onEnded={onEnded}
         playsInline
-        webkit-playsinline="true"
-        x5-playsinline="true"
       />
       
       {!isLoaded && (
         <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 text-white">
-          Loading video...
+          {lang?.loading_video || "Loading video..."}
         </div>
       )}
     </div>

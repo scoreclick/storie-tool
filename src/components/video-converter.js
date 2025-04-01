@@ -14,7 +14,7 @@ export default function VideoConverter({ lang }) {
     width: 0,
     height: 0,
     duration: 0,
-    fps: 30 // Default to 30fps
+    fps: 30 // Default to 30fps, will be updated when video is loaded
   });
   const [isPlaying, setIsPlaying] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -31,11 +31,11 @@ export default function VideoConverter({ lang }) {
   const recordedFramesRef = useRef([]);
   const lastCaptureTimeRef = useRef(0);
   
-  // Get FPS from video metadata or use a fallback
+  // Get FPS from video metadata
   const getFps = useCallback(() => {
-    // Default to 30fps, it's safer than attempting to detect
-    return 30;
-  }, []);
+    // Return the detected fps or fallback to 30fps
+    return videoMetadata.fps || 30;
+  }, [videoMetadata.fps]);
   
   // Clean up URLs when component unmounts
   useEffect(() => {
@@ -68,16 +68,13 @@ export default function VideoConverter({ lang }) {
       width: 0,
       height: 0,
       duration: 0,
-      fps: 30
+      fps: 30 // Will be updated when video is loaded
     });
   };
   
   // Load video metadata when video is loaded
   const handleVideoLoad = (metadata) => {
-    setVideoMetadata({
-      ...metadata,
-      fps: 30 // Fixed frame rate
-    });
+    setVideoMetadata(metadata);
   };
   
   // Start recording process with countdown
@@ -148,19 +145,8 @@ export default function VideoConverter({ lang }) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const mask = maskRef.current;
     
-    // Calculate capture frame rate
-    const targetFps = getFps();
-    const frameInterval = 1000 / targetFps; // Milliseconds between frames
-    const currentTime = video.currentTime * 1000; // Current time in ms
-    
-    // Check if enough time has passed since last capture
-    const timeSinceLastCapture = currentTime - lastCaptureTimeRef.current;
-    if (timeSinceLastCapture < frameInterval) {
-      return; // Skip this frame - not enough time has passed
-    }
-    
-    // Update last capture time to maintain consistent intervals
-    lastCaptureTimeRef.current = currentTime;
+    // Get the current video time in milliseconds
+    const currentTime = video.currentTime * 1000;
     
     try {
       // Get mask position and dimensions
@@ -204,7 +190,7 @@ export default function VideoConverter({ lang }) {
       
       recordedFramesRef.current.push({
         imageData,
-        timestamp: currentTime,
+        timestamp: currentTime, // Store exact video timestamp
         width: outputWidth,
         height: outputHeight
       });
@@ -212,7 +198,7 @@ export default function VideoConverter({ lang }) {
       console.error('Error capturing frame:', error);
     }
     
-  }, [isRecording, getFps]);
+  }, [isRecording]);
   
   // Handle video ended event
   const handleVideoEnded = async () => {
@@ -225,7 +211,7 @@ export default function VideoConverter({ lang }) {
     }
   };
   
-  // Export the recorded frames to MP4 using simpler approach
+  // Export the recorded frames to MP4
   const exportVideo = async () => {
     const frames = recordedFramesRef.current;
     if (!frames.length) return;
@@ -246,8 +232,6 @@ export default function VideoConverter({ lang }) {
       const width = firstFrame.width;
       const height = firstFrame.height;
       
-      console.log(`Frame dimensions: ${width}x${height}`);
-      
       // Create a temporary canvas for encoding
       const canvas = document.createElement('canvas');
       canvas.width = width;
@@ -256,9 +240,7 @@ export default function VideoConverter({ lang }) {
       
       // Fixed bitrate of 2Mbps
       const bitrate = 2_000_000;
-      const frameRate = 30; // Fixed at 30fps for reliable encoding
-      
-      console.log(`Using fixed settings: ${frameRate}fps, ${bitrate/1000000}Mbps`);
+      const outputFrameRate = 30; // Always use 30 FPS for the output
       
       try {
         // Configure video encoder
@@ -268,7 +250,8 @@ export default function VideoConverter({ lang }) {
           video: {
             codec: 'avc',
             width,
-            height
+            height,
+            frameRate: outputFrameRate
           },
           fastStart: 'in-memory'
         });
@@ -287,59 +270,103 @@ export default function VideoConverter({ lang }) {
           width,
           height,
           bitrate,
-          framerate: frameRate
+          framerate: outputFrameRate
         });
         
-        const totalFrames = frames.length;
-        console.log(`Processing ${totalFrames} frames...`);
+        // Sort frames by timestamp to ensure correct ordering
+        frames.sort((a, b) => a.timestamp - b.timestamp);
         
-        // Process frames one by one
-        for (let i = 0; i < totalFrames; i++) {
-          // Update progress
-          setExportProgress(Math.round((i + 1) / totalFrames * 100));
+        const totalFrames = frames.length;
+        const videoDuration = frames[totalFrames - 1].timestamp; // Last frame timestamp
+        
+        // Calculate microseconds per frame for 30fps output
+        const microSecondsPerFrame = 1000000 / outputFrameRate;
+        
+        // Process frames with timing adjustment
+        // We'll create frames at 30fps intervals but use the closest captured frame
+        let outputFrameIndex = 0;
+        let lastProcessedInputFrame = -1;
+        
+        while (outputFrameIndex * microSecondsPerFrame <= videoDuration * 1000) {
+          // Calculate the target time for this output frame
+          const targetOutputTime = outputFrameIndex * microSecondsPerFrame / 1000; // in ms
           
-          // Get frame data
-          const frame = frames[i];
+          // Find the closest input frame to this target time
+          let closestFrameIndex = 0;
+          let smallestTimeDiff = Number.MAX_VALUE;
           
-          // Draw to canvas
-          ctx.putImageData(frame.imageData, 0, 0);
-          
-          // Create video frame from canvas
-          const videoFrame = new VideoFrame(canvas, {
-            timestamp: i * (1000000 / frameRate), // Simple sequential timestamps
-            duration: 1000000 / frameRate
-          });
-          
-          // Key frame every 30 frames or on first frame
-          const keyFrame = i === 0 || i % 30 === 0;
-          
-          try {
-            // Encode frame
-            await videoEncoder.encode(videoFrame, { keyFrame });
-            videoFrame.close();
-          } catch (frameError) {
-            console.error(`Error encoding frame ${i}:`, frameError);
-            videoFrame.close();
+          for (let i = lastProcessedInputFrame + 1; i < totalFrames; i++) {
+            const timeDiff = Math.abs(frames[i].timestamp - targetOutputTime);
+            if (timeDiff < smallestTimeDiff) {
+              smallestTimeDiff = timeDiff;
+              closestFrameIndex = i;
+            }
+            
+            // If we've passed the target time, no need to check further frames
+            if (frames[i].timestamp > targetOutputTime) {
+              break;
+            }
           }
           
-          // Clear reference to data
-          frames[i].imageData = null;
+          // Update progress periodically
+          if (outputFrameIndex % 10 === 0) {
+            setExportProgress(Math.round((outputFrameIndex * microSecondsPerFrame / 1000 / videoDuration) * 100));
+          }
+          
+          // Get the closest frame
+          const frame = frames[closestFrameIndex];
+          
+          // If we've already processed this exact input frame and it's not the only frame,
+          // we can skip creating a duplicate frame
+          if (closestFrameIndex === lastProcessedInputFrame && totalFrames > 1 && outputFrameIndex > 0) {
+            outputFrameIndex++;
+            continue;
+          }
+          
+          lastProcessedInputFrame = closestFrameIndex;
+          
+          // Draw to canvas
+          if (frame.imageData) {
+            ctx.putImageData(frame.imageData, 0, 0);
+            
+            // Create video frame from canvas with proper timestamp
+            const videoFrame = new VideoFrame(canvas, {
+              timestamp: Math.round(outputFrameIndex * microSecondsPerFrame),
+              duration: microSecondsPerFrame
+            });
+            
+            // Key frame every 30 frames or on first frame
+            const keyFrame = outputFrameIndex === 0 || outputFrameIndex % 30 === 0;
+            
+            try {
+              // Encode frame
+              await videoEncoder.encode(videoFrame, { keyFrame });
+              videoFrame.close();
+            } catch (frameError) {
+              console.error(`Error encoding frame ${outputFrameIndex}:`, frameError);
+              videoFrame.close();
+            }
+          }
+          
+          outputFrameIndex++;
           
           // Add a small delay every 10 frames to prevent browser from becoming unresponsive
-          if (i % 10 === 0 && i > 0) {
+          if (outputFrameIndex % 10 === 0) {
             await new Promise(resolve => setTimeout(resolve, 10));
           }
         }
+        
+        // Clear original frame data to free memory
+        frames.forEach(frame => {
+          frame.imageData = null;
+        });
         
         // Finish encoding
         await videoEncoder.flush();
         muxer.finalize();
         
-        console.log('Video encoding completed successfully');
-        
         // Create URL for the encoded video
         const blob = new Blob([target.buffer], { type: 'video/mp4' });
-        console.log(`Output file size: ${(blob.size / (1024 * 1024)).toFixed(2)} MB`);
         
         const url = URL.createObjectURL(blob);
         setOutputVideoUrl(url);
@@ -418,14 +445,14 @@ export default function VideoConverter({ lang }) {
             </div>
           )}
           
-          <div className="mt-4 flex flex-col md:flex-row justify-center gap-4 w-full">
+          <div className="mt-4 flex flex-col items-center justify-center gap-4 w-full">
             {!isRecording && !outputVideoUrl && !exportProgress && !processingError && (
               <button
                 onClick={startRecording}
                 className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
                 disabled={isPlaying}
               >
-                Start Recording
+                {lang?.start_recording || "Start Recording"}
               </button>
             )}
             
@@ -434,7 +461,7 @@ export default function VideoConverter({ lang }) {
                 onClick={handleRestartRecording}
                 className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
               >
-                Restart Recording
+                {lang?.restart_recording || "Restart Recording"}
               </button>
             )}
             
@@ -452,7 +479,7 @@ export default function VideoConverter({ lang }) {
                   }}
                   className="mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
                 >
-                  Try Again
+                  {lang?.try_again || "Try Again"}
                 </button>
               </div>
             )}
@@ -469,7 +496,7 @@ export default function VideoConverter({ lang }) {
                   download="vertical-video.mp4"
                   className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 transition-colors text-center"
                 >
-                  Download Video
+                  {lang?.download_video || "Download Video"}
                 </a>
                 <button
                   onClick={() => {
@@ -489,7 +516,7 @@ export default function VideoConverter({ lang }) {
                   }}
                   className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
                 >
-                  Convert Another Video
+                  {lang?.convert_another || "Convert Another Video"}
                 </button>
               </div>
             )}
