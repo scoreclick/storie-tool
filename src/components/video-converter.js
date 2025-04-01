@@ -38,6 +38,7 @@ export default function VideoConverter({ lang }) {
   const animationFrameRef = useRef(null);
   const recordedFramesRef = useRef([]);
   const lastCaptureTimeRef = useRef(0);
+  const frameBufferSizeRef = useRef(5); // Fixed buffer size
   
   // Generate a random filename for the output video
   const generateRandomFileName = () => {
@@ -164,6 +165,13 @@ export default function VideoConverter({ lang }) {
     
     // Get the current video time in milliseconds
     const currentTime = video.currentTime * 1000;
+    
+    // Skip duplicate frames based on timestamp
+    if (lastCaptureTimeRef.current === currentTime) {
+      return;
+    }
+    
+    lastCaptureTimeRef.current = currentTime;
     
     try {
       // Get mask position and dimensions
@@ -296,10 +304,12 @@ export default function VideoConverter({ lang }) {
         // Calculate microseconds per frame for 30fps output
         const microSecondsPerFrame = 1000000 / outputFrameRate;
         
-        // Process frames with timing adjustment
-        // We'll create frames at 30fps intervals but use the closest captured frame
+        // Process frames with improved timing adjustment
         let outputFrameIndex = 0;
         let lastProcessedInputFrame = -1;
+        
+        // Track frame indices to ensure no frame is skipped
+        const processedFrameIndices = new Set();
         
         while (outputFrameIndex * microSecondsPerFrame <= videoDuration * 1000) {
           // Calculate the target time for this output frame
@@ -309,15 +319,15 @@ export default function VideoConverter({ lang }) {
           let closestFrameIndex = 0;
           let smallestTimeDiff = Number.MAX_VALUE;
           
-          for (let i = lastProcessedInputFrame + 1; i < totalFrames; i++) {
+          for (let i = 0; i < totalFrames; i++) {
             const timeDiff = Math.abs(frames[i].timestamp - targetOutputTime);
             if (timeDiff < smallestTimeDiff) {
               smallestTimeDiff = timeDiff;
               closestFrameIndex = i;
             }
             
-            // If we've passed the target time, no need to check further frames
-            if (frames[i].timestamp > targetOutputTime) {
+            // If we've passed the target time by a reasonable margin, no need to check further frames
+            if (frames[i].timestamp > targetOutputTime + 100) {
               break;
             }
           }
@@ -327,12 +337,18 @@ export default function VideoConverter({ lang }) {
             setExportProgress(Math.round((outputFrameIndex * microSecondsPerFrame / 1000 / videoDuration) * 100));
           }
           
+          // Mark this frame as processed
+          processedFrameIndices.add(closestFrameIndex);
+          
           // Get the closest frame
           const frame = frames[closestFrameIndex];
           
+          // Only skip duplicate frames when we're not close to the end of the video
+          const isNearEnd = targetOutputTime >= videoDuration * 0.9;
+          
           // If we've already processed this exact input frame and it's not the only frame,
-          // we can skip creating a duplicate frame
-          if (closestFrameIndex === lastProcessedInputFrame && totalFrames > 1 && outputFrameIndex > 0) {
+          // we can skip creating a duplicate frame unless we're near the end
+          if (!isNearEnd && closestFrameIndex === lastProcessedInputFrame && totalFrames > 1 && outputFrameIndex > 0) {
             outputFrameIndex++;
             continue;
           }
@@ -370,6 +386,34 @@ export default function VideoConverter({ lang }) {
           }
         }
         
+        // Process any skipped frames at the end to avoid missing frames
+        // This ensures all captured frames are included in the final video
+        for (let i = 0; i < totalFrames; i++) {
+          if (!processedFrameIndices.has(i)) {
+            const frame = frames[i];
+            
+            if (frame.imageData) {
+              ctx.putImageData(frame.imageData, 0, 0);
+              
+              const videoFrame = new VideoFrame(canvas, {
+                timestamp: Math.round(outputFrameIndex * microSecondsPerFrame),
+                duration: microSecondsPerFrame
+              });
+              
+              const keyFrame = outputFrameIndex % 30 === 0;
+              
+              try {
+                await videoEncoder.encode(videoFrame, { keyFrame });
+                videoFrame.close();
+                outputFrameIndex++;
+              } catch (frameError) {
+                console.error(`Error encoding extra frame ${i}:`, frameError);
+                videoFrame.close();
+              }
+            }
+          }
+        }
+        
         // Clear original frame data to free memory
         frames.forEach(frame => {
           frame.imageData = null;
@@ -402,6 +446,9 @@ export default function VideoConverter({ lang }) {
   
   // Set up animation frame for frame capture
   useEffect(() => {
+    // Create a buffer to temporarily store frames
+    let frameBuffer = [];
+    
     const captureFrameLoop = () => {
       const now = performance.now();
       const elapsed = now - lastFrameTimeRef.current;
@@ -409,24 +456,144 @@ export default function VideoConverter({ lang }) {
       
       if (elapsed >= frameInterval) {
         lastFrameTimeRef.current = now - (elapsed % frameInterval);
-        captureFrame();
+        
+        // Instead of capturing frames directly, add them to our buffer
+        if (isRecording && videoRef.current && canvasRef.current && maskRef.current) {
+          const video = videoRef.current;
+          const canvas = canvasRef.current;
+          const ctx = canvas.getContext('2d', { willReadFrequently: true });
+          const mask = maskRef.current;
+          
+          // Get the current video time in milliseconds
+          const currentTime = video.currentTime * 1000;
+          
+          // Skip duplicate frames based on timestamp
+          if (lastCaptureTimeRef.current === currentTime) {
+            // Skip this frame but keep the animation loop going
+            animationFrameRef.current = requestAnimationFrame(captureFrameLoop);
+            return;
+          }
+          
+          // Get mask position and dimensions
+          try {
+            const maskRect = mask.getBoundingClientRect();
+            const videoRect = video.getBoundingClientRect();
+            
+            // Calculate relative position of mask over video
+            const relX = (maskRect.left - videoRect.left) / videoRect.width;
+            const relY = (maskRect.top - videoRect.top) / videoRect.height;
+            const relWidth = maskRect.width / videoRect.width;
+            const relHeight = maskRect.height / videoRect.height;
+            
+            // Calculate source and destination coordinates for drawing
+            const sourceX = relX * video.videoWidth;
+            const sourceY = relY * video.videoHeight;
+            const sourceWidth = relWidth * video.videoWidth;
+            const sourceHeight = relHeight * video.videoHeight;
+            
+            // Ensure dimensions are even numbers (required by H.264 encoding)
+            const evenSourceWidth = Math.floor(sourceWidth / 2) * 2;
+            const evenSourceHeight = Math.floor(sourceHeight / 2) * 2;
+            
+            // Add frame data to buffer
+            frameBuffer.push({
+              sourceX,
+              sourceY,
+              sourceWidth: evenSourceWidth,
+              sourceHeight: evenSourceHeight,
+              timestamp: currentTime,
+              width: evenSourceWidth,
+              height: evenSourceHeight
+            });
+            
+            // Update last capture time
+            lastCaptureTimeRef.current = currentTime;
+            
+            // Process the buffer when it reaches the threshold size
+            if (frameBuffer.length >= frameBufferSizeRef.current) {
+              processFrameBuffer();
+            }
+          } catch (error) {
+            console.error('Error buffering frame:', error);
+          }
+        }
       }
       
       animationFrameRef.current = requestAnimationFrame(captureFrameLoop);
     };
     
+    // Process the buffered frames in a batch
+    const processFrameBuffer = () => {
+      if (!frameBuffer.length) return;
+      
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      const video = videoRef.current;
+      
+      // Process each frame in the buffer
+      for (const frameData of frameBuffer) {
+        // Set canvas dimensions
+        canvas.width = frameData.width;
+        canvas.height = frameData.height;
+        
+        // Draw the frame to the canvas
+        ctx.drawImage(
+          video,
+          frameData.sourceX, frameData.sourceY, frameData.sourceWidth, frameData.sourceHeight,
+          0, 0, canvas.width, canvas.height
+        );
+        
+        // Capture the frame
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        
+        // Add to recorded frames
+        recordedFramesRef.current.push({
+          imageData,
+          timestamp: frameData.timestamp,
+          width: canvas.width,
+          height: canvas.height
+        });
+      }
+      
+      // Clear the buffer after processing
+      frameBuffer = [];
+    };
+    
     if (isRecording) {
+      // Use lower playback speed for high bitrate videos to ensure consistent frame capture
+      if (videoRef.current) {
+        // Store original playback rate to restore later
+        const originalPlaybackRate = videoRef.current.playbackRate;
+        videoRef.current.playbackRate = playbackSpeed;
+      }
+      
+      // Start the capture loop
       animationFrameRef.current = requestAnimationFrame(captureFrameLoop);
     } else if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
+      
+      // Process any remaining frames in the buffer
+      if (frameBuffer.length > 0) {
+        processFrameBuffer();
+      }
+      
+      // Restore original playback rate when not recording
+      if (videoRef.current) {
+        videoRef.current.playbackRate = 1.0;
+      }
     }
     
     return () => {
+      // Process any remaining frames in the buffer before unmounting
+      if (frameBuffer.length > 0) {
+        processFrameBuffer();
+      }
+      
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [isRecording, captureFrame, frameRate]);
+  }, [isRecording, frameRate, playbackSpeed]);
 
   return (
     <div className="w-full max-w-4xl mx-auto">
@@ -478,7 +645,7 @@ export default function VideoConverter({ lang }) {
           
           <div className="mt-4 flex flex-col items-center justify-center gap-4 w-full">
             {!isRecording && !outputVideoUrl && !exportProgress && !processingError && (
-              <div className="flex items-center gap-4">
+              <div className="flex flex-col sm:flex-row items-center gap-4">
                 <button
                   onClick={startRecording}
                   className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
@@ -487,26 +654,28 @@ export default function VideoConverter({ lang }) {
                   {t('video.converter.startRecording')}
                 </button>
                 
-                {/* Playback speed control */}
-                {videoMetadata.width > 0 && (
-                  <div className="flex items-center">
-                    <label htmlFor="playback-speed" className="mr-2 text-sm font-medium">
-                      {t('video.player.speed')}:
-                    </label>
-                    <select
-                      id="playback-speed"
-                      value={playbackSpeed}
-                      onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
-                      className="bg-white border border-gray-300 rounded px-2 py-1 text-sm"
-                      disabled={isRecording}
-                    >
-                      <option value="0.25">0.25x</option>
-                      <option value="0.5">0.5x</option>
-                      <option value="0.75">0.75x</option>
-                      <option value="1">1.0x</option>
-                    </select>
-                  </div>
-                )}
+                <div className="flex flex-col sm:flex-row items-center gap-4">
+                  {/* Playback speed control */}
+                  {videoMetadata.width > 0 && (
+                    <div className="flex items-center">
+                      <label htmlFor="playback-speed" className="mr-2 text-sm font-medium">
+                        {t('video.player.speed')}:
+                      </label>
+                      <select
+                        id="playback-speed"
+                        value={playbackSpeed}
+                        onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
+                        className="bg-white border border-gray-300 rounded px-2 py-1 text-sm"
+                        disabled={isRecording}
+                      >
+                        <option value="0.25">0.25x</option>
+                        <option value="0.5">0.5x</option>
+                        <option value="0.75">0.75x</option>
+                        <option value="1">1.0x</option>
+                      </select>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
             
