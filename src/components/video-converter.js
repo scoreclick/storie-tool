@@ -21,6 +21,7 @@ export default function VideoConverter({ lang }) {
   const [exportProgress, setExportProgress] = useState(0);
   const [outputVideoUrl, setOutputVideoUrl] = useState('');
   const [videoResetKey, setVideoResetKey] = useState(0);
+  const [processingError, setProcessingError] = useState('');
   
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
@@ -49,6 +50,7 @@ export default function VideoConverter({ lang }) {
     setIsPlaying(false);
     setIsRecording(false);
     setExportProgress(0);
+    setProcessingError('');
     recordedFramesRef.current = [];
     // Increment key to force re-mount of mask
     setVideoResetKey(prevKey => prevKey + 1);
@@ -72,6 +74,7 @@ export default function VideoConverter({ lang }) {
     // Reset video to beginning
     videoRef.current.currentTime = 0;
     recordedFramesRef.current = [];
+    setProcessingError('');
     
     // Start countdown
     setCountdown(3);
@@ -104,6 +107,7 @@ export default function VideoConverter({ lang }) {
     // Stop current recording
     setIsRecording(false);
     setIsPlaying(false);
+    setProcessingError('');
     
     // Reset video to beginning
     if (videoRef.current) {
@@ -161,13 +165,18 @@ export default function VideoConverter({ lang }) {
       0, 0, canvas.width, canvas.height
     );
     
-    // Capture the frame
-    recordedFramesRef.current.push({
-      imageData: ctx.getImageData(0, 0, canvas.width, canvas.height),
-      timestamp: video.currentTime * 1000 // Convert to milliseconds
-    });
+    // Capture the frame - for longer videos, capture frame at lower frequency
+    // Only capture every 2nd frame if video is longer than 30 seconds
+    const shouldCapture = videoMetadata.duration <= 30 || Math.round(video.currentTime * 30) % 2 === 0;
     
-  }, [isRecording]);
+    if (shouldCapture) {
+      recordedFramesRef.current.push({
+        imageData: ctx.getImageData(0, 0, canvas.width, canvas.height),
+        timestamp: video.currentTime * 1000 // Convert to milliseconds
+      });
+    }
+    
+  }, [isRecording, videoMetadata.duration]);
   
   // Handle video ended event
   const handleVideoEnded = async () => {
@@ -177,6 +186,48 @@ export default function VideoConverter({ lang }) {
     if (recordedFramesRef.current.length > 0) {
       // Start exporting process
       exportVideo();
+    }
+  };
+  
+  // Process frames in chunks to avoid memory issues
+  const processFramesInChunks = async (frames, videoEncoder, canvas, ctx, totalFrames) => {
+    const CHUNK_SIZE = 30; // Process 30 frames at a time
+    let processedCount = 0;
+    
+    try {
+      for (let chunkStart = 0; chunkStart < totalFrames; chunkStart += CHUNK_SIZE) {
+        const chunkEnd = Math.min(chunkStart + CHUNK_SIZE, totalFrames);
+        
+        // Process each frame in the current chunk
+        for (let i = chunkStart; i < chunkEnd; i++) {
+          const frame = frames[i];
+          ctx.putImageData(frame.imageData, 0, 0);
+          
+          const videoFrame = new VideoFrame(canvas, {
+            timestamp: frame.timestamp * 1000, // Convert to microseconds for VideoFrame
+            duration: 33333 // ~30fps in microseconds
+          });
+          
+          // Determine if this should be a keyframe (every 30 frames or first frame)
+          const keyFrame = i === 0 || i % 30 === 0;
+          
+          // Encode the frame
+          await videoEncoder.encode(videoFrame, { keyFrame });
+          videoFrame.close();
+          
+          // Release memory by removing processed frame data
+          frames[i].imageData = null;
+          
+          // Update progress
+          processedCount++;
+          setExportProgress(Math.round(processedCount / totalFrames * 100));
+        }
+        
+        // Small delay to allow for GC
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+    } catch (error) {
+      throw error;
     }
   };
   
@@ -206,6 +257,9 @@ export default function VideoConverter({ lang }) {
       canvas.width = width;
       canvas.height = height;
       
+      // Lower the bitrate for longer videos to reduce memory usage
+      const bitrate = videoMetadata.duration > 60 ? 3_000_000 : 5_000_000;
+      
       // Configure video encoder
       const target = new ArrayBufferTarget();
       const muxer = new Muxer({
@@ -222,39 +276,24 @@ export default function VideoConverter({ lang }) {
       // Initialize encoder
       const videoEncoder = new VideoEncoder({
         output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-        error: (e) => console.error('Encoder error:', e)
+        error: (e) => {
+          console.error('Encoder error:', e);
+          setProcessingError(`Encoding error: ${e.message}`);
+        }
       });
       
       await videoEncoder.configure({
         codec: 'avc1.42001f', // H.264 baseline profile
         width: canvas.width,
         height: canvas.height,
-        bitrate: 5_000_000, // 5 Mbps
-        framerate: 30
+        bitrate: bitrate,
+        framerate: videoMetadata.duration > 30 ? 15 : 30 // Lower framerate for longer videos
       });
       
       const totalFrames = frames.length;
       
-      // Process each frame
-      for (let i = 0; i < totalFrames; i++) {
-        const frame = frames[i];
-        ctx.putImageData(frame.imageData, 0, 0);
-        
-        const videoFrame = new VideoFrame(canvas, {
-          timestamp: frame.timestamp * 1000, // Convert to microseconds for VideoFrame
-          duration: 33333 // ~30fps in microseconds
-        });
-        
-        // Determine if this should be a keyframe (every 30 frames or first frame)
-        const keyFrame = i === 0 || i % 30 === 0;
-        
-        // Encode the frame
-        await videoEncoder.encode(videoFrame, { keyFrame });
-        videoFrame.close();
-        
-        // Update progress
-        setExportProgress(Math.round((i + 1) / totalFrames * 100));
-      }
+      // Process frames in chunks to avoid memory issues
+      await processFramesInChunks(frames, videoEncoder, canvas, ctx, totalFrames);
       
       // Finish encoding
       await videoEncoder.flush();
@@ -270,7 +309,7 @@ export default function VideoConverter({ lang }) {
     } catch (error) {
       console.error('Error exporting video:', error);
       setExportProgress(0);
-      alert('Failed to export video: ' + error.message);
+      setProcessingError(`Failed to export video: ${error.message}`);
     }
   };
   
@@ -334,7 +373,7 @@ export default function VideoConverter({ lang }) {
           )}
           
           <div className="mt-4 flex flex-col md:flex-row justify-center gap-4 w-full">
-            {!isRecording && !outputVideoUrl && !exportProgress && (
+            {!isRecording && !outputVideoUrl && !exportProgress && !processingError && (
               <button
                 onClick={startRecording}
                 className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
@@ -353,8 +392,23 @@ export default function VideoConverter({ lang }) {
               </button>
             )}
             
-            {exportProgress > 0 && !outputVideoUrl && (
+            {exportProgress > 0 && !outputVideoUrl && !processingError && (
               <ExportProgress progress={exportProgress} />
+            )}
+            
+            {processingError && (
+              <div className="text-red-500 bg-red-100 p-3 rounded w-full text-center">
+                <p>{processingError}</p>
+                <button
+                  onClick={() => {
+                    setProcessingError('');
+                    setExportProgress(0);
+                  }}
+                  className="mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+                >
+                  Try Again
+                </button>
+              </div>
             )}
             
             {outputVideoUrl && (
@@ -376,6 +430,7 @@ export default function VideoConverter({ lang }) {
                     setVideoFile(null);
                     setVideoUrl('');
                     setOutputVideoUrl('');
+                    setProcessingError('');
                     // Reset mask state by incrementing key
                     setVideoResetKey(prevKey => prevKey + 1);
                     // Reset video metadata
