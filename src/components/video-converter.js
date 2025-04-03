@@ -446,9 +446,6 @@ export default function VideoConverter({ lang }) {
   
   // Set up animation frame for frame capture
   useEffect(() => {
-    // Create a buffer to temporarily store frames
-    let frameBuffer = [];
-    
     const captureFrameLoop = () => {
       const now = performance.now();
       const elapsed = now - lastFrameTimeRef.current;
@@ -456,114 +453,16 @@ export default function VideoConverter({ lang }) {
       
       if (elapsed >= frameInterval) {
         lastFrameTimeRef.current = now - (elapsed % frameInterval);
-        
-        // Instead of capturing frames directly, add them to our buffer
-        if (isRecording && videoRef.current && canvasRef.current && maskRef.current) {
-          const video = videoRef.current;
-          const canvas = canvasRef.current;
-          const ctx = canvas.getContext('2d', { willReadFrequently: true });
-          const mask = maskRef.current;
-          
-          // Get the current video time in milliseconds
-          const currentTime = video.currentTime * 1000;
-          
-          // Skip duplicate frames based on timestamp
-          if (lastCaptureTimeRef.current === currentTime) {
-            // Skip this frame but keep the animation loop going
-            animationFrameRef.current = requestAnimationFrame(captureFrameLoop);
-            return;
-          }
-          
-          // Get mask position and dimensions
-          try {
-            const maskRect = mask.getBoundingClientRect();
-            const videoRect = video.getBoundingClientRect();
-            
-            // Calculate relative position of mask over video
-            const relX = (maskRect.left - videoRect.left) / videoRect.width;
-            const relY = (maskRect.top - videoRect.top) / videoRect.height;
-            const relWidth = maskRect.width / videoRect.width;
-            const relHeight = maskRect.height / videoRect.height;
-            
-            // Calculate source and destination coordinates for drawing
-            const sourceX = relX * video.videoWidth;
-            const sourceY = relY * video.videoHeight;
-            const sourceWidth = relWidth * video.videoWidth;
-            const sourceHeight = relHeight * video.videoHeight;
-            
-            // Ensure dimensions are even numbers (required by H.264 encoding)
-            const evenSourceWidth = Math.floor(sourceWidth / 2) * 2;
-            const evenSourceHeight = Math.floor(sourceHeight / 2) * 2;
-            
-            // Add frame data to buffer
-            frameBuffer.push({
-              sourceX,
-              sourceY,
-              sourceWidth: evenSourceWidth,
-              sourceHeight: evenSourceHeight,
-              timestamp: currentTime,
-              width: evenSourceWidth,
-              height: evenSourceHeight
-            });
-            
-            // Update last capture time
-            lastCaptureTimeRef.current = currentTime;
-            
-            // Process the buffer when it reaches the threshold size
-            if (frameBuffer.length >= frameBufferSizeRef.current) {
-              processFrameBuffer();
-            }
-          } catch (error) {
-            console.error('Error buffering frame:', error);
-          }
-        }
+        captureFrame();
       }
       
       animationFrameRef.current = requestAnimationFrame(captureFrameLoop);
-    };
-    
-    // Process the buffered frames in a batch
-    const processFrameBuffer = () => {
-      if (!frameBuffer.length) return;
-      
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      const video = videoRef.current;
-      
-      // Process each frame in the buffer
-      for (const frameData of frameBuffer) {
-        // Set canvas dimensions
-        canvas.width = frameData.width;
-        canvas.height = frameData.height;
-        
-        // Draw the frame to the canvas
-        ctx.drawImage(
-          video,
-          frameData.sourceX, frameData.sourceY, frameData.sourceWidth, frameData.sourceHeight,
-          0, 0, canvas.width, canvas.height
-        );
-        
-        // Capture the frame
-        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        
-        // Add to recorded frames
-        recordedFramesRef.current.push({
-          imageData,
-          timestamp: frameData.timestamp,
-          width: canvas.width,
-          height: canvas.height
-        });
-      }
-      
-      // Clear the buffer after processing
-      frameBuffer = [];
     };
     
     if (isRecording) {
       // Use lower playback speed for high bitrate videos to ensure consistent frame capture
       if (videoRef.current) {
         // Store original playback rate to restore later
-        const originalPlaybackRate = videoRef.current.playbackRate;
         videoRef.current.playbackRate = playbackSpeed;
       }
       
@@ -572,11 +471,6 @@ export default function VideoConverter({ lang }) {
     } else if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       
-      // Process any remaining frames in the buffer
-      if (frameBuffer.length > 0) {
-        processFrameBuffer();
-      }
-      
       // Restore original playback rate when not recording
       if (videoRef.current) {
         videoRef.current.playbackRate = 1.0;
@@ -584,19 +478,14 @@ export default function VideoConverter({ lang }) {
     }
     
     return () => {
-      // Process any remaining frames in the buffer before unmounting
-      if (frameBuffer.length > 0) {
-        processFrameBuffer();
-      }
-      
       if (animationFrameRef.current) {
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [isRecording, frameRate, playbackSpeed]);
+  }, [isRecording, frameRate, captureFrame, playbackSpeed]);
 
   return (
-    <div className="w-full max-w-4xl mx-auto">
+    <div className="max-w-4xl mx-auto px-4 py-8">
       {!videoFile ? (
         <VideoUploader onUpload={handleVideoUpload} lang={lang} />
       ) : (
@@ -606,7 +495,7 @@ export default function VideoConverter({ lang }) {
               {/* Video and mask container */}
               <div className="relative">
                 <VideoPlayer
-                  videoRef={videoRef}
+                  ref={videoRef}
                   src={videoUrl}
                   onLoad={handleVideoLoad}
                   onEnded={handleVideoEnded}
@@ -629,7 +518,7 @@ export default function VideoConverter({ lang }) {
                 {/* Hidden canvas for capturing frames */}
                 <canvas 
                   ref={canvasRef} 
-                  className="hidden"
+                  className="absolute top-0 left-0 pointer-events-none opacity-0"
                 />
               </div>
             </>
@@ -729,8 +618,6 @@ export default function VideoConverter({ lang }) {
                   
                   <button
                     onClick={() => {
-                      // When recording again with the same video, we need to recreate the video URL
-                      // to prevent CORS security issues with canvas
                       if (videoFile) {
                         // Revoke existing URLs
                         if (videoUrl) URL.revokeObjectURL(videoUrl);
@@ -791,10 +678,6 @@ export default function VideoConverter({ lang }) {
                   {t('video.converter.convertAnotherVideo')}
                 </button>
               </div>
-            )}
-            
-            {countdown > 0 && (
-              <div className="text-2xl font-bold">{t('video.converter.countdown', { seconds: countdown })}</div>
             )}
           </div>
         </div>

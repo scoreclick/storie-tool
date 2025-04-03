@@ -1,44 +1,47 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, forwardRef, useImperativeHandle } from 'react';
 import { useTranslations } from '@/hooks/use-translations';
 
-export default function VideoPlayer({ videoRef, src, onLoad, onEnded, isPlaying, lang, playbackSpeed }) {
+const VideoPlayer = forwardRef(function VideoPlayer({ src, onLoad, onEnded, isPlaying, lang, playbackSpeed = 1.0 }, ref) {
   const { t } = useTranslations(lang);
   const [isLoaded, setIsLoaded] = useState(false);
+  const [internalPlaybackSpeed, setInternalPlaybackSpeed] = useState(playbackSpeed);
   
   // Set playback rate when component mounts and whenever playbackSpeed changes
   useEffect(() => {
-    if (videoRef.current) {
+    setInternalPlaybackSpeed(playbackSpeed || 1.0);
+    
+    if (ref && ref.current) {
       // Set both default and current playback rate
-      videoRef.current.defaultPlaybackRate = playbackSpeed;
-      videoRef.current.playbackRate = playbackSpeed;
+      ref.current.defaultPlaybackRate = playbackSpeed || 1.0;
+      ref.current.playbackRate = playbackSpeed || 1.0;
     }
-  }, [playbackSpeed]);
+  }, [playbackSpeed, ref]);
   
   useEffect(() => {
-    if (videoRef.current) {
+    if (ref && ref.current) {
       if (isPlaying) {
-        videoRef.current.play().catch(err => console.error('Failed to play:', err));
+        ref.current.play().catch(err => console.error('Failed to play:', err));
         // Re-apply playback rate as some mobile browsers reset it when play() is called
-        videoRef.current.playbackRate = playbackSpeed;
+        ref.current.playbackRate = internalPlaybackSpeed;
       } else {
-        videoRef.current.pause();
+        ref.current.pause();
       }
       
       // Ensure playback rate is set
-      videoRef.current.playbackRate = playbackSpeed;
+      ref.current.playbackRate = internalPlaybackSpeed;
     }
-  }, [isPlaying, videoRef, playbackSpeed]);
+  }, [isPlaying, ref, internalPlaybackSpeed]);
 
   const handleLoadedMetadata = () => {
-    if (!videoRef.current) return;
+    if (!ref || !ref.current) return;
     
-    const video = videoRef.current;
+    const video = ref.current;
     setIsLoaded(true);
     
     // Set playback rate after metadata is loaded (important for mobile)
-    video.playbackRate = playbackSpeed;
+    video.playbackRate = internalPlaybackSpeed;
     
     // Just pass the basic metadata
     const metadata = {
@@ -49,13 +52,13 @@ export default function VideoPlayer({ videoRef, src, onLoad, onEnded, isPlaying,
     };
     
     // Pass metadata to parent component
-    onLoad(metadata);
+    if (onLoad) onLoad(metadata);
   };
   
   // Handle rate change (for mobile browsers that might reset playback rate)
   const handleRateChange = () => {
-    if (videoRef.current && videoRef.current.playbackRate !== playbackSpeed) {
-      videoRef.current.playbackRate = playbackSpeed;
+    if (ref && ref.current && ref.current.playbackRate !== internalPlaybackSpeed) {
+      ref.current.playbackRate = internalPlaybackSpeed;
     }
   };
 
@@ -63,7 +66,7 @@ export default function VideoPlayer({ videoRef, src, onLoad, onEnded, isPlaying,
     <div className="relative rounded overflow-hidden bg-black flex flex-col">
       <div className="flex justify-center">
         <video
-          ref={videoRef}
+          ref={ref}
           src={src}
           className="max-w-full max-h-[70vh] object-contain"
           onLoadedMetadata={handleLoadedMetadata}
@@ -71,8 +74,8 @@ export default function VideoPlayer({ videoRef, src, onLoad, onEnded, isPlaying,
           onRateChange={handleRateChange}
           onPlay={() => {
             // Some mobile browsers reset playbackRate when play() is called
-            if (videoRef.current) {
-              videoRef.current.playbackRate = playbackSpeed;
+            if (ref && ref.current) {
+              ref.current.playbackRate = internalPlaybackSpeed;
             }
           }}
           playsInline
@@ -87,4 +90,6 @@ export default function VideoPlayer({ videoRef, src, onLoad, onEnded, isPlaying,
       </div>
     </div>
   );
-} 
+});
+
+export default VideoPlayer; 
