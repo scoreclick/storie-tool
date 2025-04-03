@@ -36,7 +36,9 @@
       "errorEncoding": "Encoding error:",
       "convertAnotherVideo": "Convert Another Video",
       "recordAgain": "Record Again",
-      "tryAgain": "Try Again"
+      "tryAgain": "Try Again",
+      "framesRecorded": "Frames Recorded",
+      "memoryUsage": "Memory"
     }
   }
 } 

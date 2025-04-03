@@ -1,11 +1,11 @@
 {
   "metadata": {
     "title": "Herramienta de Stories de Score Click",
-    "description": "Convierte tu video horizontal a un video vertical para Stories controlando la cámara con tu dedo."
+    "description": "Convierte tu video horizontal a un formato de video vertical controlando la cámara con el dedo."
   },
   "home": {
     "title": "Score Click - Creador de Stories",
-    "description": "Sube un video horizontal y conviértelo a formato vertical con movimiento de cámara interactivo.",
+    "description": "Sube un video horizontal y conviértelo a formato vertical con movimiento interactivo de cámara.",
     "footer": "copyright 2025 - Score Click"
   },
   "video": {
@@ -20,11 +20,11 @@
       "speed": "Velocidad"
     },
     "mask": {
-      "recording": "Grabando - Arrastra para Mover la Cámara",
+      "recording": "Grabando - Arrastra para mover la cámara",
       "dragToPosition": "Arrastra para posicionar"
     },
     "converter": {
-      "browserNotSupported": "La API WebCodecs no es compatible con este navegador. Por favor, usa un navegador moderno como Chrome, Edge u Opera.",
+      "browserNotSupported": "La API WebCodecs no está soportada en este navegador. Por favor, usa un navegador moderno como Chrome, Edge o Opera.",
       "exporting": "Exportando video...",
       "exportComplete": "¡Exportación completa!",
       "downloadVideo": "Descargar Video",
@@ -32,11 +32,13 @@
       "startRecording": "Iniciar Grabación",
       "countdown": "Comenzando en {seconds}...",
       "processingVideo": "Procesando video...",
-      "errorProcessing": "Error al procesar el video:",
+      "errorProcessing": "Error al procesar video:",
       "errorEncoding": "Error de codificación:",
       "convertAnotherVideo": "Convertir Otro Video",
-      "recordAgain": "Grabar de Nuevo",
-      "tryAgain": "Intentar de Nuevo"
+      "recordAgain": "Grabar Nuevamente",
+      "tryAgain": "Intentar Nuevamente",
+      "framesRecorded": "Cuadros Grabados",
+      "memoryUsage": "Memoria"
     }
   }
 } 
