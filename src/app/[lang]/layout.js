@@ -1,6 +1,7 @@
 import { Geist, Geist_Mono } from "next/font/google";
 import "../globals.css";
 import { getDictionary } from "@/dictionaries";
+import { LanguageProvider } from "@/contexts/language-context";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -26,5 +27,10 @@ export async function generateMetadata({ params }) {
 
 export default async function RootLayout({ children, params }) {
   const { lang } = await params;
-  return children;
+  
+  return (
+    <LanguageProvider lang={lang}>
+      {children}
+    </LanguageProvider>
+  );
 } 

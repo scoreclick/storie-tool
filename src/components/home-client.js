@@ -1,12 +1,11 @@
 'use client';
 
-import { useState, useRef } from 'react';
 import VideoConverter from './video-converter';
 import LanguageSwitcher from './language-switcher';
 import { useTranslations } from '@/hooks/use-translations';
 
-export default function HomeClient({ lang }) {
-  const { t } = useTranslations(lang);
+export default function HomeClient() {
+  const { t } = useTranslations();
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center p-4">
@@ -21,7 +20,7 @@ export default function HomeClient({ lang }) {
         {t('home.description')}
       </p>
       
-      <VideoConverter lang={lang} />
+      <VideoConverter />
       
       <footer className="mt-8 text-xs text-center text-gray-500">
         <p>{t('home.footer')}</p>

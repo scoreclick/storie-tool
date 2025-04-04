@@ -1,9 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useLanguage } from '@/contexts/language-context';
 
 // This is a client-side implementation that will load the translations
-export function useTranslations(locale) {
+export function useTranslations() {
+  const locale = useLanguage();
   const [translations, setTranslations] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
 
