@@ -1,11 +1,11 @@
 {
   "metadata": {
-    "title": "Ferramenta de Stories da Score Click",
-    "description": "Converta seu vídeo horizontal para um formato de vídeo vertical controlando a câmera com o dedo."
+    "title": "Ferramenta de Stories do Score Click",
+    "description": "Converta seu vídeo horizontal para um vídeo de formato vertical de Stories controlando a câmera com seu dedo."
   },
   "home": {
     "title": "Score Click - Criador de Stories",
-    "description": "Carregue um vídeo horizontal e converta-o para o formato vertical com movimento interativo da câmera.",
+    "description": "Faça upload de um vídeo horizontal e converta-o para formato vertical com movimentação interativa da câmera.",
     "footer": "copyright 2025 - Score Click"
   },
   "video": {
@@ -13,14 +13,14 @@
       "dragAndDrop": "Arraste e solte seu vídeo aqui, ou",
       "selectVideo": "Selecionar Vídeo",
       "supportedFormats": "Formatos suportados: MP4, WebM, MKV, AVI, etc.",
-      "errorNotVideo": "Por favor, carregue um arquivo de vídeo."
+      "errorNotVideo": "Por favor, faça upload de um arquivo de vídeo."
     },
     "player": {
       "loading": "Carregando vídeo...",
       "speed": "Velocidade"
     },
     "mask": {
-      "recording": "Gravando - Arraste para mover a câmera",
+      "recording": "Gravando - Arraste para Mover a Câmera",
       "dragToPosition": "Arraste para posicionar"
     },
     "converter": {
@@ -30,15 +30,13 @@
       "downloadVideo": "Baixar Vídeo",
       "restartRecording": "Reiniciar Gravação",
       "startRecording": "Iniciar Gravação",
-      "countdown": "Iniciando em {seconds}...",
+      "countdown": "Começando em {seconds}...",
       "processingVideo": "Processando vídeo...",
       "errorProcessing": "Erro ao processar vídeo:",
       "errorEncoding": "Erro de codificação:",
       "convertAnotherVideo": "Converter Outro Vídeo",
       "recordAgain": "Gravar Novamente",
-      "tryAgain": "Tentar Novamente",
-      "framesRecorded": "Quadros Gravados",
-      "memoryUsage": "Memória"
+      "tryAgain": "Tentar Novamente"
     }
   }
 } 

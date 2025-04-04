@@ -29,114 +29,38 @@ export default function VideoConverter({ lang }) {
   const [showVideoInput, setShowVideoInput] = useState(true);
   const [outputFileName, setOutputFileName] = useState('');
   const [playbackSpeed, setPlaybackSpeed] = useState(0.5);
-  const [frameRate, setFrameRate] = useState(15); // Default to 15fps
-  const [workerStatus, setWorkerStatus] = useState({ frameCount: 0 });
-  const [memoryUsage, setMemoryUsage] = useState(null);
-  const lastFrameTimeRef = useRef(0);
+  const [frameRate, setFrameRate] = useState(30);
+  const [memoryUsage, setMemoryUsage] = useState(0);
   
+  const lastFrameTimeRef = useRef(0);
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const maskRef = useRef(null);
   const animationFrameRef = useRef(null);
-  const workerRef = useRef(null);
-  const memoryMonitorRef = useRef(null);
-  
-  // Streaming implementation
   const recordedFramesRef = useRef([]);
-  const frameChunksRef = useRef([]); // Store chunks of processed frames
-  const processingStateRef = useRef({
-    isProcessing: false,
-    processedChunks: 0,
-    targetFPS: 30,
-    lastCaptureTime: 0,
-    frameBufferSize: 30, // Process frames in chunks of 30
-    encoder: null,
-    muxer: null,
-    target: null,
-    canvas: null,
-    ctx: null,
-    outputWidth: 0,
-    outputHeight: 0,
-    keyFrameInterval: 30
-  });
+  const lastCaptureTimeRef = useRef(0);
+  const imageDataPoolRef = useRef([]);
+  const offscreenCanvasRef = useRef(null);
   
-  // Initialize web worker
-  useEffect(() => {
-    // Only initialize in browser environment
-    if (typeof window === 'undefined') return;
-    
-    // Clean up existing worker
-    if (workerRef.current) {
-      workerRef.current.terminate();
-    }
-    
-    // Create worker with dynamic import for Next.js compatibility
-    const initWorker = async () => {
-      try {
-        // Dynamic import of the worker module
-        const workerModule = await import('../workers/frame-processor.js');
-        
-        // Create a worker URL from the module
-        const workerBlob = new Blob([workerModule.default], { type: 'text/javascript' });
-        const workerUrl = URL.createObjectURL(workerBlob);
-        const worker = new Worker(workerUrl);
-        
-        // Store the worker reference
-        workerRef.current = worker;
-        
-        // Set up message handler
-        worker.onmessage = (event) => {
-          const { type, data } = event.data;
-          
-          switch (type) {
-            case 'FRAMES_PROCESSED':
-              // Add processed frames to chunks
-              frameChunksRef.current.push({
-                frames: data.frames,
-                processed: true
-              });
-              
-              // Update UI with frame status
-              setWorkerStatus(prev => ({
-                ...prev,
-                frameCount: (prev.frameCount || 0) + data.frames.length,
-                remaining: data.remaining
-              }));
-              break;
-              
-            case 'CACHE_UPDATE':
-              // Update UI with cache size
-              setWorkerStatus(prev => ({
-                ...prev,
-                cacheSize: data.cacheSize
-              }));
-              break;
-              
-            case 'ERROR':
-              console.error('Worker error:', data.message);
-              setProcessingError(t('video.converter.errorProcessing') + ' ' + data.message);
-              break;
-              
-            default:
-              console.log('Worker message:', type, data);
-          }
-        };
-      } catch (error) {
-        console.error('Failed to initialize worker:', error);
-      }
-    };
-    
-    // Initialize the worker
-    initWorker();
-    
-    // Clean up worker when component unmounts
-    return () => {
-      if (workerRef.current) {
-        workerRef.current.terminate();
-        workerRef.current = null;
-      }
-    };
-  }, [t]);
+  // New refs for streaming processing
+  const frameQueueRef = useRef([]);
+  const isProcessingQueueRef = useRef(false);
+  const lastProcessedTimeRef = useRef(0);
+  const videoEncoderRef = useRef(null);
+  const muxerRef = useRef(null);
+  const targetRef = useRef(null);
+  const encoderInitializedRef = useRef(false);
+  const totalFramesProcessedRef = useRef(0);
+  const recordingStartTimeRef = useRef(0);
+  const isFinalizingRef = useRef(false);
+  
+  // Constants for video encoding
+  const TARGET_WIDTH = 610;
+  const TARGET_HEIGHT = 1084;
+  const TARGET_BITRATE = 2_000_000; // 2Mbps
+  const TARGET_FPS = 30;
+  const CHUNK_SIZE = 30; // Process 30 frames at a time
+  const QUEUE_THRESHOLD = 60; // Process after accumulating 60 frames (2 seconds at 30fps)
   
   // Generate a random filename for the output video
   const generateRandomFileName = () => {
@@ -152,13 +76,318 @@ export default function VideoConverter({ lang }) {
     return videoMetadata.fps || 30;
   }, [videoMetadata.fps]);
   
+  // Helper function to get ImageData from pool
+  const getImageDataFromPool = useCallback((width, height) => {
+    const pool = imageDataPoolRef.current;
+    const index = pool.findIndex(item => 
+      item.width === width && item.height === height);
+    
+    if (index >= 0) {
+      return pool.splice(index, 1)[0];
+    }
+    return null;
+  }, []);
+  
+  // Helper function to return ImageData to pool
+  const returnImageDataToPool = useCallback((imageData) => {
+    if (!imageData) return;
+    
+    const pool = imageDataPoolRef.current;
+    if (pool.length < 20) { // Limit pool size
+      pool.push(imageData);
+    }
+  }, []);
+  
+  // Trigger garbage collection (as much as browser allows)
+  const triggerGC = useCallback(async () => {
+    // Clear references to help garbage collector
+    const tempArray = new Array(10000).fill('x');
+    tempArray.length = 0;
+    
+    // Give browser a chance to perform GC
+    await new Promise(resolve => setTimeout(resolve, 0));
+    
+    // Attempt to estimate memory usage (rough approximation)
+    if (window.performance && window.performance.memory) {
+      setMemoryUsage(Math.round(window.performance.memory.usedJSHeapSize / (1024 * 1024)));
+    }
+  }, []);
+  
+  // Initialize video encoder and muxer
+  const initializeEncoder = useCallback(async () => {
+    if (encoderInitializedRef.current) return;
+    
+    try {
+      // Check if WebCodecs API is available
+      if (typeof window !== 'undefined' && !('VideoEncoder' in window)) {
+        throw new Error(t('video.converter.browserNotSupported'));
+      }
+      
+      // Create target for muxer
+      targetRef.current = new ArrayBufferTarget();
+      
+      // Configure muxer
+      muxerRef.current = new Muxer({
+        target: targetRef.current,
+        video: {
+          codec: 'avc',
+          width: TARGET_WIDTH,
+          height: TARGET_HEIGHT,
+          frameRate: TARGET_FPS
+        },
+        fastStart: 'in-memory'
+      });
+      
+      // Initialize encoder
+      videoEncoderRef.current = new VideoEncoder({
+        output: (chunk, meta) => muxerRef.current.addVideoChunk(chunk, meta),
+        error: (e) => {
+          console.error('Encoder error:', e);
+          setProcessingError(t('video.converter.errorEncoding') + ' ' + e.message);
+        }
+      });
+      
+      await videoEncoderRef.current.configure({
+        codec: 'avc1.42001f', // H.264 baseline profile
+        width: TARGET_WIDTH,
+        height: TARGET_HEIGHT,
+        bitrate: TARGET_BITRATE,
+        framerate: TARGET_FPS
+      });
+      
+      encoderInitializedRef.current = true;
+      console.log('Encoder initialized');
+      
+    } catch (error) {
+      console.error('Error initializing encoder:', error);
+      setProcessingError(t('video.converter.errorProcessing') + ' ' + error.message);
+      throw error;
+    }
+  }, [t]);
+  
+  // Helper to find closest frame by time
+  const findClosestFrameByTime = useCallback((frames, targetTime) => {
+    if (!frames.length) return null;
+    
+    let closestFrame = frames[0];
+    let smallestDiff = Math.abs(frames[0].timestamp - targetTime);
+    
+    for (let i = 1; i < frames.length; i++) {
+      const diff = Math.abs(frames[i].timestamp - targetTime);
+      if (diff < smallestDiff) {
+        smallestDiff = diff;
+        closestFrame = frames[i];
+      }
+    }
+    
+    return closestFrame;
+  }, []);
+  
+  // Process a single frame
+  const processFrame = useCallback(async (frame, timestampMicros) => {
+    if (!frame || !frame.imageData || !videoEncoderRef.current || !offscreenCanvasRef.current) return;
+    
+    const canvas = offscreenCanvasRef.current;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    
+    try {
+      // Draw frame to canvas
+      ctx.putImageData(frame.imageData, 0, 0);
+      
+      // Create video frame
+      const videoFrame = new VideoFrame(canvas, {
+        timestamp: timestampMicros,
+        duration: Math.round(1000000 / TARGET_FPS)
+      });
+      
+      // Key frame every 30 frames or on first frame
+      const keyFrame = totalFramesProcessedRef.current === 0 || totalFramesProcessedRef.current % 30 === 0;
+      
+      // Encode frame
+      await videoEncoderRef.current.encode(videoFrame, { keyFrame });
+      videoFrame.close();
+      
+      // Increment processed frames counter
+      totalFramesProcessedRef.current++;
+      
+    } catch (error) {
+      console.error('Error processing frame:', error);
+    }
+  }, []);
+  
+  // Process frames from queue
+  const processFrameQueue = useCallback(async () => {
+    if (isProcessingQueueRef.current || frameQueueRef.current.length < 1 || isFinalizingRef.current) return;
+    
+    isProcessingQueueRef.current = true;
+    
+    try {
+      // Initialize encoder if not already done
+      if (!encoderInitializedRef.current) {
+        await initializeEncoder();
+      }
+      
+      // Take frames to process (up to CHUNK_SIZE)
+      const framesToProcess = frameQueueRef.current.splice(0, CHUNK_SIZE);
+      
+      if (framesToProcess.length === 0) {
+        isProcessingQueueRef.current = false;
+        return;
+      }
+      
+      // Sort frames by timestamp
+      framesToProcess.sort((a, b) => a.timestamp - b.timestamp);
+      
+      // Calculate time range for this batch
+      const startTime = framesToProcess[0].timestamp;
+      const endTime = framesToProcess[framesToProcess.length - 1].timestamp;
+      const timeRangeMs = endTime - startTime;
+      
+      // For first batch, initialize the recording start time
+      if (totalFramesProcessedRef.current === 0) {
+        recordingStartTimeRef.current = startTime;
+        lastProcessedTimeRef.current = startTime;
+      }
+      
+      // Calculate frames needed for this time range
+      const framesNeeded = Math.max(1, Math.ceil(timeRangeMs * TARGET_FPS / 1000));
+      
+      // Process frames with consistent timing
+      for (let i = 0; i < framesNeeded; i++) {
+        // Calculate target time relative to batch start
+        const targetTime = startTime + (i * 1000 / TARGET_FPS);
+        
+        // Skip if we've passed the end time
+        if (targetTime > endTime) break;
+        
+        // Find closest frame to target time
+        const closestFrame = findClosestFrameByTime(framesToProcess, targetTime);
+        
+        if (closestFrame) {
+          // Calculate global timestamp in microseconds
+          // This ensures timestamps always increase monotonically from the recording start
+          const elapsedFromStartMs = targetTime - recordingStartTimeRef.current;
+          const globalTimestampMicros = Math.round(elapsedFromStartMs * 1000);
+          
+          // Process frame
+          await processFrame(closestFrame, globalTimestampMicros);
+          
+          // Update last processed time
+          lastProcessedTimeRef.current = targetTime;
+        }
+      }
+      
+      // Update progress
+      if (videoRef.current) {
+        const videoDuration = videoRef.current.duration * 1000; // in ms
+        const progressPercent = Math.min(100, Math.round((lastProcessedTimeRef.current - recordingStartTimeRef.current) / videoDuration * 100));
+        setExportProgress(progressPercent);
+      }
+      
+      // Clean up processed frames
+      framesToProcess.forEach(frame => {
+        if (frame && frame.imageData) {
+          returnImageDataToPool(frame.imageData);
+          frame.imageData = null;
+        }
+      });
+      
+      // Trigger garbage collection
+      await triggerGC();
+      
+    } catch (error) {
+      console.error('Error processing frame queue:', error);
+    } finally {
+      isProcessingQueueRef.current = false;
+      
+      // Check if more frames need processing
+      if (frameQueueRef.current.length > 0 && !isFinalizingRef.current) {
+        setTimeout(processFrameQueue, 0);
+      }
+    }
+  }, [initializeEncoder, findClosestFrameByTime, processFrame, returnImageDataToPool, triggerGC]);
+  
   // Clean up URLs when component unmounts
   useEffect(() => {
     return () => {
       if (videoUrl) URL.revokeObjectURL(videoUrl);
       if (outputVideoUrl) URL.revokeObjectURL(outputVideoUrl);
+      
+      // Clean up encoder and muxer
+      if (videoEncoderRef.current) {
+        try {
+          videoEncoderRef.current.close();
+        } catch (e) {
+          console.error('Error closing encoder:', e);
+        }
+      }
+      
+      // Clear image data pool
+      imageDataPoolRef.current = [];
+      frameQueueRef.current = [];
     };
   }, [videoUrl, outputVideoUrl]);
+  
+  // Finalize video processing
+  const finalizeVideo = useCallback(async () => {
+    if (isFinalizingRef.current) return;
+    isFinalizingRef.current = true;
+    
+    try {
+      // If encoder isn't initialized, no frames were processed
+      if (!encoderInitializedRef.current || !videoEncoderRef.current || !muxerRef.current) {
+        setProcessingError(t('video.converter.noFramesCaptured'));
+        isFinalizingRef.current = false;
+        return;
+      }
+      
+      // Flush encoder and finalize muxer
+      await videoEncoderRef.current.flush();
+      muxerRef.current.finalize();
+      
+      // Create blob from buffer
+      const blob = new Blob([targetRef.current.buffer], { type: 'video/mp4' });
+      
+      // Create URL for the encoded video
+      const url = URL.createObjectURL(blob);
+      setOutputVideoUrl(url);
+      setOutputFileName(generateRandomFileName());
+      setExportProgress(100);
+      setShowVideoInput(false); // Hide the video input when export is complete
+      
+      console.log(`Video export complete. Processed ${totalFramesProcessedRef.current} frames.`);
+      
+      // Clean up resources
+      frameQueueRef.current = [];
+      recordedFramesRef.current = [];
+      imageDataPoolRef.current = [];
+      
+      // Close encoder
+      try {
+        videoEncoderRef.current.close();
+      } catch (e) {
+        console.error('Error closing encoder:', e);
+      }
+      
+      // Reset references for future recordings
+      videoEncoderRef.current = null;
+      muxerRef.current = null;
+      targetRef.current = null;
+      encoderInitializedRef.current = false;
+      lastProcessedTimeRef.current = 0;
+      totalFramesProcessedRef.current = 0;
+      
+      // Trigger garbage collection
+      await triggerGC();
+      
+    } catch (error) {
+      console.error('Error finalizing video:', error);
+      setProcessingError(t('video.converter.errorProcessing') + ' ' + error.message);
+      setExportProgress(0);
+    } finally {
+      isFinalizingRef.current = false;
+    }
+  }, [t, triggerGC]);
 
   // Handle video file upload
   const handleVideoUpload = (file) => {
@@ -175,27 +404,22 @@ export default function VideoConverter({ lang }) {
     setExportProgress(0);
     setProcessingError('');
     setShowVideoInput(true);
-    setWorkerStatus({ frameCount: 0 });
-    
-    // Reset recording state
     recordedFramesRef.current = [];
-    frameChunksRef.current = [];
-    processingStateRef.current = {
-      ...processingStateRef.current,
-      isProcessing: false,
-      processedChunks: 0,
-      lastCaptureTime: 0
-    };
+    frameQueueRef.current = [];
+    lastCaptureTimeRef.current = 0;
+    imageDataPoolRef.current = []; // Clear image data pool
     
-    // Clear worker cache
-    if (workerRef.current) {
-      workerRef.current.postMessage({
-        type: 'CLEAR_CACHE'
-      });
-    }
+    // Reset encoder state
+    encoderInitializedRef.current = false;
+    videoEncoderRef.current = null;
+    muxerRef.current = null;
+    targetRef.current = null;
+    totalFramesProcessedRef.current = 0;
+    lastProcessedTimeRef.current = 0;
     
     // Increment key to force re-mount of mask
     setVideoResetKey(prevKey => prevKey + 1);
+    
     // Reset video metadata to ensure proper recalculation
     setVideoMetadata({
       width: 0,
@@ -204,6 +428,20 @@ export default function VideoConverter({ lang }) {
       fps: 30 // Will be updated when video is loaded
     });
   };
+  
+  // Initialize OffscreenCanvas if available
+  useEffect(() => {
+    // Create offscreen canvas if supported
+    if (typeof OffscreenCanvas !== 'undefined') {
+      offscreenCanvasRef.current = new OffscreenCanvas(TARGET_WIDTH, TARGET_HEIGHT);
+    } else {
+      // Fallback to regular canvas
+      const canvas = document.createElement('canvas');
+      canvas.width = TARGET_WIDTH;
+      canvas.height = TARGET_HEIGHT;
+      offscreenCanvasRef.current = canvas;
+    }
+  }, []);
   
   // Load video metadata when video is loaded
   const handleVideoLoad = (metadata) => {
@@ -216,9 +454,21 @@ export default function VideoConverter({ lang }) {
     
     // Reset video to beginning
     videoRef.current.currentTime = 0;
+    
+    // Reset state
     recordedFramesRef.current = [];
-    processingStateRef.current.lastCaptureTime = 0;
+    frameQueueRef.current = [];
+    lastCaptureTimeRef.current = 0;
+    totalFramesProcessedRef.current = 0;
+    lastProcessedTimeRef.current = 0;
+    recordingStartTimeRef.current = 0;
     setProcessingError('');
+    
+    // Reset encoder state
+    encoderInitializedRef.current = false;
+    videoEncoderRef.current = null;
+    muxerRef.current = null;
+    targetRef.current = null;
     
     // Start countdown
     setCountdown(3);
@@ -240,6 +490,10 @@ export default function VideoConverter({ lang }) {
     setIsRecording(true);
     setIsPlaying(true);
     
+    // Clear image data pool before starting new recording
+    imageDataPoolRef.current = [];
+    frameQueueRef.current = [];
+    
     // Start video playback
     if (videoRef.current) {
       videoRef.current.play();
@@ -259,9 +513,31 @@ export default function VideoConverter({ lang }) {
       videoRef.current.pause();
     }
     
-    // Clear recorded frames
+    // Clear frames and state
     recordedFramesRef.current = [];
-    processingStateRef.current.lastCaptureTime = 0;
+    frameQueueRef.current = [];
+    imageDataPoolRef.current = [];
+    lastCaptureTimeRef.current = 0;
+    totalFramesProcessedRef.current = 0;
+    lastProcessedTimeRef.current = 0;
+    
+    // Close encoder if open
+    if (videoEncoderRef.current) {
+      try {
+        videoEncoderRef.current.close();
+      } catch (e) {
+        console.error('Error closing encoder:', e);
+      }
+    }
+    
+    // Reset encoder state
+    encoderInitializedRef.current = false;
+    videoEncoderRef.current = null;
+    muxerRef.current = null;
+    targetRef.current = null;
+    
+    // Trigger garbage collection
+    triggerGC();
     
     // Small delay before starting new countdown
     setTimeout(() => {
@@ -269,103 +545,24 @@ export default function VideoConverter({ lang }) {
     }, 500);
   };
   
-  // Monitor memory usage to prevent crashes
-  useEffect(() => {
-    // Only run in browsers that support performance.memory
-    if (typeof window === 'undefined' || !window.performance || !window.performance.memory) {
-      return;
-    }
-    
-    const checkMemoryUsage = () => {
-      const memory = window.performance.memory;
-      const usedHeapSizeInMB = Math.round(memory.usedJSHeapSize / (1024 * 1024));
-      const totalHeapSizeInMB = Math.round(memory.totalJSHeapSize / (1024 * 1024));
-      const usagePercentage = Math.round((usedHeapSizeInMB / totalHeapSizeInMB) * 100);
-      
-      // Update memory usage state
-      setMemoryUsage({
-        used: usedHeapSizeInMB,
-        total: totalHeapSizeInMB,
-        percentage: usagePercentage
-      });
-      
-      // If memory usage is too high, try to free up memory
-      if (usagePercentage > 80) {
-        console.warn('High memory usage detected, triggering garbage collection');
-        
-        // Force free any unused image buffers by nullifying references
-        if (recordedFramesRef.current.length > 0) {
-          // Take the excess frames and send them to the worker
-          processFrameChunk();
-        }
-      }
-    };
-    
-    // Only monitor memory during recording
-    if (isRecording) {
-      // Check memory usage every 2 seconds
-      memoryMonitorRef.current = setInterval(checkMemoryUsage, 2000);
-    } else if (memoryMonitorRef.current) {
-      clearInterval(memoryMonitorRef.current);
-    }
-    
-    return () => {
-      if (memoryMonitorRef.current) {
-        clearInterval(memoryMonitorRef.current);
-      }
-    };
-  }, [isRecording]);
-  
-  // Handle GC triggering
-  const triggerGarbageCollection = useCallback(() => {
-    // Clean up any unused objects
-    if (typeof window !== 'undefined' && window.gc) {
-      try {
-        window.gc();
-      } catch (e) {
-        console.log('Manual GC not available');
-      }
-    }
-    
-    // In Chrome, forcing allocations and dereferencing can help trigger GC
-    const forceGC = () => {
-      const memoryHog = [];
-      try {
-        // Allocate a large object and immediately dereference it
-        for (let i = 0; i < 10; i++) {
-          memoryHog.push(new ArrayBuffer(1024 * 1024)); // Allocate 1MB
-        }
-      } catch (e) {
-        console.error('Error forcing GC', e);
-      }
-      
-      // Clear the memory hog
-      while (memoryHog.length) {
-        memoryHog.pop();
-      }
-    };
-    
-    forceGC();
-  }, []);
-  
   // Capture frames during recording
   const captureFrame = useCallback(() => {
-    if (!isRecording || !videoRef.current || !canvasRef.current || !maskRef.current) return;
+    if (!isRecording || !videoRef.current || !maskRef.current || !offscreenCanvasRef.current) return;
     
     const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     const mask = maskRef.current;
+    const offscreenCanvas = offscreenCanvasRef.current;
+    const offscreenCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
     
     // Get the current video time in milliseconds
     const currentTime = video.currentTime * 1000;
     
     // Skip duplicate frames based on timestamp
-    if (processingStateRef.current.lastCaptureTime === currentTime) {
+    if (lastCaptureTimeRef.current === currentTime) {
       return;
     }
     
-    processingStateRef.current.lastCaptureTime = currentTime;
+    lastCaptureTimeRef.current = currentTime;
     
     try {
       // Get mask position and dimensions
@@ -384,398 +581,77 @@ export default function VideoConverter({ lang }) {
       const sourceWidth = relWidth * video.videoWidth;
       const sourceHeight = relHeight * video.videoHeight;
       
-      // Ensure dimensions are even numbers (required by H.264 encoding)
-      // Floor to even number
-      const evenSourceWidth = Math.floor(sourceWidth / 2) * 2;
-      const evenSourceHeight = Math.floor(sourceHeight / 2) * 2;
+      // Ensure dimensions match our target resolution with even numbers
+      const evenSourceWidth = Math.min(Math.floor(sourceWidth / 2) * 2, TARGET_WIDTH);
+      const evenSourceHeight = Math.min(Math.floor(sourceHeight / 2) * 2, TARGET_HEIGHT);
       
-      // Set canvas dimensions for 9:16 aspect ratio with even numbers
-      canvas.width = evenSourceWidth;
-      canvas.height = evenSourceHeight;
+      // Set canvas dimensions
+      offscreenCanvas.width = TARGET_WIDTH;
+      offscreenCanvas.height = TARGET_HEIGHT;
       
-      // Save output dimensions for encoder initialization
-      if (processingStateRef.current.outputWidth === 0) {
-        processingStateRef.current.outputWidth = evenSourceWidth;
-        processingStateRef.current.outputHeight = evenSourceHeight;
-      }
-      
-      // Draw the current frame to the canvas
-      ctx.drawImage(
+      // Draw the current frame to the offscreen canvas
+      offscreenCtx.drawImage(
         video,
         sourceX, sourceY, sourceWidth, sourceHeight,
-        0, 0, canvas.width, canvas.height
+        0, 0, TARGET_WIDTH, TARGET_HEIGHT
       );
       
-      // Capture the frame
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      
-      // Instead of adding directly to recordedFramesRef, create a simplified object
-      // This reduces memory usage by not storing the full ImageData object
-      const frame = {
-        // Store the image data as an ArrayBuffer which can be transferred to the worker
-        buffer: imageData.data.buffer,
-        width: canvas.width,
-        height: canvas.height,
-        timestamp: currentTime
-      };
-      
-      // Add to local buffer
-      recordedFramesRef.current.push(frame);
-      
-      // Process frames in chunks to avoid memory issues
-      // Changed threshold to be more aggressive on memory cleanup
-      if (recordedFramesRef.current.length >= processingStateRef.current.frameBufferSize) {
-        processFrameChunk();
-        
-        // Try to trigger garbage collection after processing a chunk
-        setTimeout(() => {
-          triggerGarbageCollection();
-        }, 100);
+      // Reuse ImageData from pool or create new one
+      let imageData = getImageDataFromPool(TARGET_WIDTH, TARGET_HEIGHT);
+      if (!imageData) {
+        imageData = offscreenCtx.createImageData(TARGET_WIDTH, TARGET_HEIGHT);
       }
+      
+      // Get current canvas data
+      const canvasData = offscreenCtx.getImageData(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
+      
+      // Copy canvas data to our reusable ImageData
+      imageData.data.set(canvasData.data);
+      
+      // Add frame to queue instead of large array
+      frameQueueRef.current.push({
+        imageData,
+        timestamp: currentTime,
+        width: TARGET_WIDTH,
+        height: TARGET_HEIGHT
+      });
+      
+      // Process frames when queue reaches threshold
+      if (frameQueueRef.current.length >= QUEUE_THRESHOLD && !isProcessingQueueRef.current) {
+        processFrameQueue();
+      }
+      
+      // Periodically update memory usage
+      if (frameQueueRef.current.length % 30 === 0) {
+        triggerGC();
+      }
+      
     } catch (error) {
       console.error('Error capturing frame:', error);
     }
-    
-  }, [isRecording, triggerGarbageCollection]);
-
-  // Process a chunk of frames to avoid memory buildup
-  const processFrameChunk = async () => {
-    if (processingStateRef.current.isProcessing || recordedFramesRef.current.length === 0 || !workerRef.current) {
-      return;
-    }
-    
-    processingStateRef.current.isProcessing = true;
-    
-    try {
-      // Take frames from the buffer
-      const framesChunk = [...recordedFramesRef.current];
-      // Clear the buffer
-      recordedFramesRef.current = [];
-      
-      // Send to worker for processing instead of storing directly
-      // Use transferable objects to avoid copying the large buffer data
-      const transferables = framesChunk.map(frame => frame.buffer);
-      
-      workerRef.current.postMessage({
-        type: 'ADD_FRAMES',
-        data: {
-          frames: framesChunk
-        }
-      }, transferables);
-      
-      console.log(`Frame chunk sent to worker: ${framesChunk.length} frames`);
-      
-    } catch (error) {
-      console.error('Error processing frame chunk:', error);
-      // If worker fails, fallback to storing locally
-      frameChunksRef.current.push({
-        frames: recordedFramesRef.current,
-        processed: false
-      });
-      recordedFramesRef.current = [];
-    } finally {
-      processingStateRef.current.isProcessing = false;
-    }
-  };
+  }, [isRecording, getImageDataFromPool, processFrameQueue, triggerGC]);
   
   // Handle video ended event
   const handleVideoEnded = async () => {
     setIsPlaying(false);
     setIsRecording(false);
     
-    // Process any remaining frames in the buffer
-    if (recordedFramesRef.current.length > 0) {
-      await processFrameChunk();
-    }
+    console.log(`Video ended. Frames in queue: ${frameQueueRef.current.length}`);
     
-    // Give worker a moment to finish processing
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    // Start exporting
-    exportVideo();
-  };
-  
-  // Export the recorded frames to MP4
-  const exportVideo = async () => {
-    // Wait for worker to finish processing frames
-    if (workerRef.current && workerStatus.remaining > 0) {
-      // Trigger processing of any remaining frames
-      workerRef.current.postMessage({ type: 'PROCESS_FRAMES' });
-      
-      // Give the worker a moment to finish
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-    
-    // Count total frames from chunks
-    const totalFrames = frameChunksRef.current.reduce(
-      (count, chunk) => count + chunk.frames.length, 
-      0
-    );
-    
-    if (totalFrames === 0) return;
-    
-    try {
-      console.log(`Starting export with ${totalFrames} frames...`);
-      
-      // Check if WebCodecs API is available
-      if (typeof window !== 'undefined' && !('VideoEncoder' in window)) {
-        throw new Error(t('video.converter.browserNotSupported'));
-      }
-      
-      // Get frame dimensions from the first chunk's first frame
-      const firstChunk = frameChunksRef.current[0];
-      const firstFrame = firstChunk.frames[0];
-      const width = firstFrame.width;
-      const height = firstFrame.height;
-      
-      // Store for later use
-      processingStateRef.current.outputWidth = width;
-      processingStateRef.current.outputHeight = height;
-      
-      // Create a temporary canvas for encoding if not already created
-      if (!processingStateRef.current.canvas) {
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
-        
-        processingStateRef.current.canvas = canvas;
-        processingStateRef.current.ctx = ctx;
-      }
-      
-      // Fixed bitrate of 2Mbps
-      const bitrate = 2_000_000;
-      const outputFrameRate = 30; // Always use 30 FPS for the output
-      
-      try {
-        // Configure video encoder
-        const target = new ArrayBufferTarget();
-        const muxer = new Muxer({
-          target,
-          video: {
-            codec: 'avc',
-            width,
-            height,
-            frameRate: outputFrameRate
-          },
-          fastStart: 'in-memory'
-        });
-        
-        // Initialize encoder with optimized settings
-        const videoEncoder = new VideoEncoder({
-          output: (chunk, meta) => muxer.addVideoChunk(chunk, meta),
-          error: (e) => {
-            console.error('Encoder error:', e);
-            setProcessingError(t('video.converter.errorEncoding') + ' ' + e.message);
-          }
-        });
-        
-        await videoEncoder.configure({
-          codec: 'avc1.42001f', // H.264 baseline profile
-          width,
-          height,
-          bitrate,
-          framerate: outputFrameRate
-        });
-        
-        // Store encoder and muxer for potential early cleanup
-        processingStateRef.current.encoder = videoEncoder;
-        processingStateRef.current.muxer = muxer;
-        processingStateRef.current.target = target;
-        
-        // Calculate the last frame timestamp
-        let lastTimestamp = 0;
-        for (const chunk of frameChunksRef.current) {
-          const chunkFrames = chunk.frames;
-          if (chunkFrames.length > 0) {
-            const lastFrameInChunk = chunkFrames[chunkFrames.length - 1];
-            lastTimestamp = Math.max(lastTimestamp, lastFrameInChunk.timestamp);
-          }
+    // Process any remaining frames in the queue
+    if (frameQueueRef.current.length > 0) {
+      // Process remaining frames
+      const checkQueue = setInterval(() => {
+        if (frameQueueRef.current.length === 0 && !isProcessingQueueRef.current) {
+          clearInterval(checkQueue);
+          finalizeVideo();
+        } else if (frameQueueRef.current.length > 0 && !isProcessingQueueRef.current) {
+          processFrameQueue();
         }
-        
-        const videoDuration = lastTimestamp; // Last frame timestamp
-        
-        // Calculate microseconds per frame for 30fps output
-        const microSecondsPerFrame = 1000000 / outputFrameRate;
-        
-        // Process all chunks sequentially
-        let processedFrameCount = 0;
-        let outputFrameIndex = 0;
-        let lastProgressUpdate = 0;
-        
-        // Create temporary ImageData for rendering frames
-        const tempImageData = new ImageData(width, height);
-        
-        // Flatten all frames for processing
-        const allFrames = [];
-        for (const chunk of frameChunksRef.current) {
-          allFrames.push(...chunk.frames);
-        }
-        
-        // Sort frames by timestamp to ensure correct ordering
-        allFrames.sort((a, b) => a.timestamp - b.timestamp);
-        
-        // Track frame indices to ensure no frame is skipped
-        const processedFrameIndices = new Set();
-        let lastProcessedInputFrame = -1;
-        
-        while (outputFrameIndex * microSecondsPerFrame <= videoDuration * 1000) {
-          // Calculate the target time for this output frame
-          const targetOutputTime = outputFrameIndex * microSecondsPerFrame / 1000; // in ms
-          
-          // Find the closest input frame to this target time
-          let closestFrameIndex = 0;
-          let smallestTimeDiff = Number.MAX_VALUE;
-          
-          for (let i = 0; i < allFrames.length; i++) {
-            const timeDiff = Math.abs(allFrames[i].timestamp - targetOutputTime);
-            if (timeDiff < smallestTimeDiff) {
-              smallestTimeDiff = timeDiff;
-              closestFrameIndex = i;
-            }
-            
-            // If we've passed the target time by a reasonable margin, no need to check further frames
-            if (allFrames[i].timestamp > targetOutputTime + 100) {
-              break;
-            }
-          }
-          
-          // Update progress every 30 frames (approximately once per second at 30fps)
-          if (outputFrameIndex % 30 === 0) {
-            const now = Date.now();
-            // Only update UI every 250ms to reduce rendering load
-            if (now - lastProgressUpdate > 250) {
-              lastProgressUpdate = now;
-              setExportProgress(Math.round((outputFrameIndex * microSecondsPerFrame / 1000 / videoDuration) * 100));
-              // Allow UI to update
-              await new Promise(resolve => setTimeout(resolve, 0));
-            }
-          }
-          
-          // Mark this frame as processed
-          processedFrameIndices.add(closestFrameIndex);
-          
-          // Get the closest frame
-          const frame = allFrames[closestFrameIndex];
-          
-          // Only skip duplicate frames when we're not close to the end of the video
-          const isNearEnd = targetOutputTime >= videoDuration * 0.9;
-          
-          // If we've already processed this exact input frame and it's not the only frame,
-          // we can skip creating a duplicate frame unless we're near the end
-          if (!isNearEnd && closestFrameIndex === lastProcessedInputFrame && allFrames.length > 1 && outputFrameIndex > 0) {
-            outputFrameIndex++;
-            continue;
-          }
-          
-          lastProcessedInputFrame = closestFrameIndex;
-          
-          // Draw to canvas
-          if (frame.buffer) {
-            // Reconstruct ImageData from buffer
-            tempImageData.data.set(new Uint8ClampedArray(frame.buffer));
-            processingStateRef.current.ctx.putImageData(tempImageData, 0, 0);
-            
-            // Create video frame from canvas with proper timestamp
-            const videoFrame = new VideoFrame(processingStateRef.current.canvas, {
-              timestamp: Math.round(outputFrameIndex * microSecondsPerFrame),
-              duration: microSecondsPerFrame
-            });
-            
-            // Key frame every 30 frames or on first frame
-            const keyFrame = outputFrameIndex === 0 || outputFrameIndex % processingStateRef.current.keyFrameInterval === 0;
-            
-            try {
-              // Encode frame
-              await videoEncoder.encode(videoFrame, { keyFrame });
-              videoFrame.close();
-              
-              // Free memory by nullifying processed frame's buffer reference
-              frame.buffer = null;
-              
-              processedFrameCount++;
-            } catch (frameError) {
-              console.error(`Error encoding frame ${outputFrameIndex}:`, frameError);
-              videoFrame.close();
-            }
-          }
-          
-          outputFrameIndex++;
-          
-          // Add a small delay every 10 frames to prevent browser from becoming unresponsive
-          if (outputFrameIndex % 10 === 0) {
-            await new Promise(resolve => setTimeout(resolve, 5));
-          }
-        }
-        
-        // Process any skipped frames at the end to avoid missing frames
-        for (let i = 0; i < allFrames.length; i++) {
-          if (!processedFrameIndices.has(i)) {
-            const frame = allFrames[i];
-            
-            if (frame.buffer) {
-              // Reconstruct ImageData from buffer
-              tempImageData.data.set(new Uint8ClampedArray(frame.buffer));
-              processingStateRef.current.ctx.putImageData(tempImageData, 0, 0);
-              
-              const videoFrame = new VideoFrame(processingStateRef.current.canvas, {
-                timestamp: Math.round(outputFrameIndex * microSecondsPerFrame),
-                duration: microSecondsPerFrame
-              });
-              
-              const keyFrame = outputFrameIndex % processingStateRef.current.keyFrameInterval === 0;
-              
-              try {
-                await videoEncoder.encode(videoFrame, { keyFrame });
-                videoFrame.close();
-                outputFrameIndex++;
-                processedFrameCount++;
-                
-                // Free memory
-                frame.buffer = null;
-              } catch (frameError) {
-                console.error(`Error encoding extra frame ${i}:`, frameError);
-                videoFrame.close();
-              }
-            }
-          }
-        }
-        
-        // Clear all frame data to free memory
-        frameChunksRef.current = [];
-        allFrames.length = 0;
-        
-        // Finish encoding
-        await videoEncoder.flush();
-        muxer.finalize();
-        
-        // Create URL for the encoded video
-        const blob = new Blob([target.buffer], { type: 'video/mp4' });
-        
-        const url = URL.createObjectURL(blob);
-        setOutputVideoUrl(url);
-        setOutputFileName(generateRandomFileName());
-        setExportProgress(100);
-        setShowVideoInput(false); // Hide the video input when export is complete
-        
-        // Clean up resources
-        processingStateRef.current.encoder = null;
-        processingStateRef.current.muxer = null;
-        processingStateRef.current.target = null;
-        
-      } catch (encoderError) {
-        console.error('Encoder setup/processing error:', encoderError);
-        throw new Error(t('video.converter.errorProcessing') + ' ' + encoderError.message);
-      }
-      
-    } catch (error) {
-      console.error('Error exporting video:', error);
-      setProcessingError(t('video.converter.errorProcessing') + ' ' + error.message);
-      setExportProgress(0);
-      
-      // Clean up resources on error
-      frameChunksRef.current = [];
-      recordedFramesRef.current = [];
+      }, 100);
+    } else {
+      // If no frames to process, just finalize the video
+      await finalizeVideo();
     }
   };
   
@@ -856,20 +732,6 @@ export default function VideoConverter({ lang }) {
                   className="absolute top-0 left-0 pointer-events-none opacity-0"
                 />
               </div>
-              
-              {/* Frame status indicator during recording (optional) */}
-              {isRecording && workerStatus.frameCount > 0 && (
-                <div className="mt-2 text-xs text-gray-500">
-                  {t('video.converter.framesRecorded')}: {workerStatus.frameCount}
-                  {memoryUsage && (
-                    <span className="ml-2">
-                      {" | "} 
-                      {t('video.converter.memoryUsage')}: {memoryUsage.used}MB / {memoryUsage.total}MB 
-                      ({memoryUsage.percentage}%)
-                    </span>
-                  )}
-                </div>
-              )}
             </>
           )}
           
@@ -939,6 +801,26 @@ export default function VideoConverter({ lang }) {
                     setExportProgress(0);
                     // Reset mask position by forcing a remount
                     setVideoResetKey(prevKey => prevKey + 1);
+                    
+                    // Clear memory
+                    recordedFramesRef.current = [];
+                    frameQueueRef.current = [];
+                    imageDataPoolRef.current = [];
+                    
+                    // Reset encoder state
+                    encoderInitializedRef.current = false;
+                    if (videoEncoderRef.current) {
+                      try {
+                        videoEncoderRef.current.close();
+                      } catch (e) {
+                        console.error('Error closing encoder:', e);
+                      }
+                    }
+                    videoEncoderRef.current = null;
+                    muxerRef.current = null;
+                    targetRef.current = null;
+                    
+                    triggerGC();
                   }}
                   className="mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
                 >
@@ -982,7 +864,26 @@ export default function VideoConverter({ lang }) {
                       setExportProgress(0);
                       setShowVideoInput(true); // Show the video input again
                       recordedFramesRef.current = [];
-                      processingStateRef.current.lastCaptureTime = 0;
+                      frameQueueRef.current = [];
+                      imageDataPoolRef.current = [];
+                      lastCaptureTimeRef.current = 0;
+                      
+                      // Reset encoder state
+                      encoderInitializedRef.current = false;
+                      if (videoEncoderRef.current) {
+                        try {
+                          videoEncoderRef.current.close();
+                        } catch (e) {
+                          console.error('Error closing encoder:', e);
+                        }
+                      }
+                      videoEncoderRef.current = null;
+                      muxerRef.current = null;
+                      targetRef.current = null;
+                      totalFramesProcessedRef.current = 0;
+                      
+                      // Trigger garbage collection
+                      triggerGC();
                       
                       // Reset video position
                       if (videoRef.current) {
@@ -1021,11 +922,38 @@ export default function VideoConverter({ lang }) {
                       duration: 0,
                       fps: 30
                     });
+                    
+                    // Clear memory
+                    recordedFramesRef.current = [];
+                    frameQueueRef.current = [];
+                    imageDataPoolRef.current = [];
+                    
+                    // Reset encoder state
+                    encoderInitializedRef.current = false;
+                    if (videoEncoderRef.current) {
+                      try {
+                        videoEncoderRef.current.close();
+                      } catch (e) {
+                        console.error('Error closing encoder:', e);
+                      }
+                    }
+                    videoEncoderRef.current = null;
+                    muxerRef.current = null;
+                    targetRef.current = null;
+                    
+                    triggerGC();
                   }}
                   className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
                 >
                   {t('video.converter.convertAnotherVideo')}
                 </button>
+              </div>
+            )}
+            
+            {/* Memory usage indicator (only shown during debug) */}
+            {process.env.NODE_ENV === 'development' && (
+              <div className="text-xs text-gray-500 mt-2">
+                Memory: ~{memoryUsage} MB | Queue: {frameQueueRef.current.length} | Processed: {totalFramesProcessedRef.current}
               </div>
             )}
           </div>
