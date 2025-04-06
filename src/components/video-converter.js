@@ -61,6 +61,8 @@ export default function VideoConverter({ lang }) {
   const TARGET_FPS = 30;
   const CHUNK_SIZE = 30; // Process 30 frames at a time
   const QUEUE_THRESHOLD = 60; // Process after accumulating 60 frames (2 seconds at 30fps)
+  const INITIAL_THRESHOLD = 10; // Start processing after just 10 frames for smoother start
+  const INITIAL_CHUNK_SIZE = 5; // Use smaller chunks for the first processing batch
   
   // Generate a random filename for the output video
   const generateRandomFileName = () => {
@@ -138,29 +140,54 @@ export default function VideoConverter({ lang }) {
         fastStart: 'in-memory'
       });
       
+      // Initialize encoder with basic configuration
+      // Simplify config to avoid unsupported options
+      const encoderConfig = {
+        codec: 'avc1.42001f', // H.264 baseline profile
+        width: TARGET_WIDTH,
+        height: TARGET_HEIGHT,
+        bitrate: TARGET_BITRATE,
+        framerate: TARGET_FPS
+      };
+      
       // Initialize encoder
       videoEncoderRef.current = new VideoEncoder({
-        output: (chunk, meta) => muxerRef.current.addVideoChunk(chunk, meta),
+        output: (chunk, meta) => {
+          try {
+            muxerRef.current.addVideoChunk(chunk, meta);
+          } catch (e) {
+            console.error('Error adding video chunk to muxer:', e);
+          }
+        },
         error: (e) => {
           console.error('Encoder error:', e);
           setProcessingError(t('video.converter.errorEncoding') + ' ' + e.message);
         }
       });
       
-      await videoEncoderRef.current.configure({
-        codec: 'avc1.42001f', // H.264 baseline profile
-        width: TARGET_WIDTH,
-        height: TARGET_HEIGHT,
-        bitrate: TARGET_BITRATE,
-        framerate: TARGET_FPS
-      });
-      
-      encoderInitializedRef.current = true;
-      console.log('Encoder initialized');
+      try {
+        await videoEncoderRef.current.configure(encoderConfig);
+        encoderInitializedRef.current = true;
+        console.log('Encoder initialized');
+      } catch (configError) {
+        console.error('Encoder configuration error:', configError);
+        
+        // Attempt with even more basic configuration as fallback
+        console.log('Attempting with fallback configuration...');
+        await videoEncoderRef.current.configure({
+          codec: 'avc1.42001f',
+          width: TARGET_WIDTH,
+          height: TARGET_HEIGHT,
+          bitrate: 1_000_000 // Lower bitrate
+        });
+        
+        encoderInitializedRef.current = true;
+        console.log('Encoder initialized with fallback configuration');
+      }
       
     } catch (error) {
       console.error('Error initializing encoder:', error);
-      setProcessingError(t('video.converter.errorProcessing') + ' ' + error.message);
+      setProcessingError('Error: ' + (error.message || 'Failed to create encoder. Your browser may not support this feature.'));
       throw error;
     }
   }, [t]);
@@ -190,6 +217,11 @@ export default function VideoConverter({ lang }) {
     const canvas = offscreenCanvasRef.current;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     
+    if (!ctx) {
+      console.error('Could not get 2D context from canvas');
+      return;
+    }
+    
     try {
       // Draw frame to canvas
       ctx.putImageData(frame.imageData, 0, 0);
@@ -203,9 +235,22 @@ export default function VideoConverter({ lang }) {
       // Key frame every 30 frames or on first frame
       const keyFrame = totalFramesProcessedRef.current === 0 || totalFramesProcessedRef.current % 30 === 0;
       
-      // Encode frame
-      await videoEncoderRef.current.encode(videoFrame, { keyFrame });
-      videoFrame.close();
+      // Encode frame with timeout protection
+      const encodePromise = videoEncoderRef.current.encode(videoFrame, { keyFrame });
+      
+      // Set a timeout for encoding (5 seconds)
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Frame encoding timed out')), 5000);
+      });
+      
+      // Race between encode and timeout
+      await Promise.race([encodePromise, timeoutPromise]).catch(err => {
+        console.error('Error during frame encoding:', err);
+        // Close the frame even if encoding fails
+      }).finally(() => {
+        // Always close the video frame to free up resources
+        videoFrame.close();
+      });
       
       // Increment processed frames counter
       totalFramesProcessedRef.current++;
@@ -227,8 +272,18 @@ export default function VideoConverter({ lang }) {
         await initializeEncoder();
       }
       
-      // Take frames to process (up to CHUNK_SIZE)
-      const framesToProcess = frameQueueRef.current.splice(0, CHUNK_SIZE);
+      // Use smaller chunk size for first batch to reduce stutter
+      const actualChunkSize = totalFramesProcessedRef.current === 0 
+        ? INITIAL_CHUNK_SIZE 
+        : CHUNK_SIZE;
+      
+      // Additional yield before taking frames
+      if (totalFramesProcessedRef.current === 0) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+      }
+      
+      // Take frames to process
+      const framesToProcess = frameQueueRef.current.splice(0, actualChunkSize);
       
       if (framesToProcess.length === 0) {
         isProcessingQueueRef.current = false;
@@ -247,12 +302,15 @@ export default function VideoConverter({ lang }) {
       if (totalFramesProcessedRef.current === 0) {
         recordingStartTimeRef.current = startTime;
         lastProcessedTimeRef.current = startTime;
+        
+        // Extra yield to main thread before starting processing to prevent UI stutter
+        await new Promise(resolve => setTimeout(resolve, 50));
       }
       
       // Calculate frames needed for this time range
       const framesNeeded = Math.max(1, Math.ceil(timeRangeMs * TARGET_FPS / 1000));
       
-      // Process frames with consistent timing
+      // Process frames with consistent timing and yield between frames to prevent stutter
       for (let i = 0; i < framesNeeded; i++) {
         // Calculate target time relative to batch start
         const targetTime = startTime + (i * 1000 / TARGET_FPS);
@@ -274,6 +332,11 @@ export default function VideoConverter({ lang }) {
           
           // Update last processed time
           lastProcessedTimeRef.current = targetTime;
+          
+          // Yield to main thread more frequently during the first batch
+          if (totalFramesProcessedRef.current < 30 && i % 2 === 0) {
+            await new Promise(resolve => setTimeout(resolve, 10));
+          }
         }
       }
       
@@ -302,7 +365,9 @@ export default function VideoConverter({ lang }) {
       
       // Check if more frames need processing
       if (frameQueueRef.current.length > 0 && !isFinalizingRef.current) {
-        setTimeout(processFrameQueue, 0);
+        // Use a longer timeout for the first few batches to allow UI to remain responsive
+        const timeout = totalFramesProcessedRef.current < 60 ? 10 : 0;
+        setTimeout(processFrameQueue, timeout);
       }
     }
   }, [initializeEncoder, findClosestFrameByTime, processFrame, returnImageDataToPool, triggerGC]);
@@ -397,6 +462,15 @@ export default function VideoConverter({ lang }) {
       setOutputVideoUrl('');
     }
     
+    // Close existing encoder if any
+    if (videoEncoderRef.current) {
+      try {
+        videoEncoderRef.current.close();
+      } catch (e) {
+        console.error('Error closing encoder:', e);
+      }
+    }
+    
     setVideoFile(file);
     setVideoUrl(URL.createObjectURL(file));
     setIsPlaying(false);
@@ -409,7 +483,7 @@ export default function VideoConverter({ lang }) {
     lastCaptureTimeRef.current = 0;
     imageDataPoolRef.current = []; // Clear image data pool
     
-    // Reset encoder state
+    // Reset encoder state completely for a new video
     encoderInitializedRef.current = false;
     videoEncoderRef.current = null;
     muxerRef.current = null;
@@ -454,6 +528,7 @@ export default function VideoConverter({ lang }) {
     
     // Reset video to beginning
     videoRef.current.currentTime = 0;
+    videoRef.current.pause(); // Pause until countdown finishes
     
     // Reset state
     recordedFramesRef.current = [];
@@ -464,25 +539,37 @@ export default function VideoConverter({ lang }) {
     recordingStartTimeRef.current = 0;
     setProcessingError('');
     
-    // Reset encoder state
-    encoderInitializedRef.current = false;
-    videoEncoderRef.current = null;
-    muxerRef.current = null;
-    targetRef.current = null;
+    // Pre-initialize encoder before starting countdown to reduce stutter
+    // We use a small delay to ensure UI is responsive during initialization
+    const startCountdown = () => {
+      setCountdown(3);
+      
+      const countdownInterval = setInterval(() => {
+        setCountdown((prev) => {
+          if (prev <= 1) {
+            clearInterval(countdownInterval);
+            beginRecording();
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    };
     
-    // Start countdown
-    setCountdown(3);
-    
-    const countdownInterval = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 1) {
-          clearInterval(countdownInterval);
-          beginRecording();
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    // Initialize encoder first to avoid stutter during recording
+    if (!encoderInitializedRef.current) {
+      initializeEncoder()
+        .then(() => {
+          console.log('Encoder pre-initialized successfully');
+          startCountdown();
+        })
+        .catch(err => {
+          console.error('Failed to initialize encoder during recording start:', err);
+          setProcessingError(t('video.converter.errorProcessing') + ' ' + err.message);
+        });
+    } else {
+      startCountdown();
+    }
   };
   
   // Begin actual recording after countdown
@@ -494,10 +581,31 @@ export default function VideoConverter({ lang }) {
     imageDataPoolRef.current = [];
     frameQueueRef.current = [];
     
-    // Start video playback
-    if (videoRef.current) {
-      videoRef.current.play();
-    }
+    // Reset frame processing counters to ensure proper initialization
+    totalFramesProcessedRef.current = 0;
+    lastProcessedTimeRef.current = 0;
+    recordingStartTimeRef.current = 0;
+    
+    // Give a small delay before starting video playback
+    // This allows the encoder to be ready before frames start processing
+    setTimeout(() => {
+      // Start video playback
+      if (videoRef.current) {
+        // Create a promise to start playback
+        const playPromise = videoRef.current.play();
+        
+        // Handle potential play() rejection (browsers may prevent autoplay)
+        if (playPromise !== undefined) {
+          playPromise.catch(error => {
+            console.error('Video playback failed:', error);
+            // Reset recording state if playback fails
+            setIsRecording(false);
+            setIsPlaying(false);
+            setProcessingError('Video playback failed. Please try again or use a different browser.');
+          });
+        }
+      }
+    }, 300); // Increased delay to ensure encoder is fully initialized
   };
   
   // Restart recording process
@@ -506,6 +614,7 @@ export default function VideoConverter({ lang }) {
     setIsRecording(false);
     setIsPlaying(false);
     setProcessingError('');
+    setExportProgress(0); // Reset export progress
     
     // Reset video to beginning
     if (videoRef.current) {
@@ -521,7 +630,13 @@ export default function VideoConverter({ lang }) {
     totalFramesProcessedRef.current = 0;
     lastProcessedTimeRef.current = 0;
     
-    // Close encoder if open
+    // Reset processing flags
+    isProcessingQueueRef.current = false;
+    isFinalizingRef.current = false;
+    
+    // We need to close and reinitialize encoder and muxer for each recording session
+    // to avoid timestamp issues with the muxer
+    encoderInitializedRef.current = false;
     if (videoEncoderRef.current) {
       try {
         videoEncoderRef.current.close();
@@ -529,9 +644,6 @@ export default function VideoConverter({ lang }) {
         console.error('Error closing encoder:', e);
       }
     }
-    
-    // Reset encoder state
-    encoderInitializedRef.current = false;
     videoEncoderRef.current = null;
     muxerRef.current = null;
     targetRef.current = null;
@@ -616,8 +728,12 @@ export default function VideoConverter({ lang }) {
         height: TARGET_HEIGHT
       });
       
+      // Start processing earlier with a smaller number of frames to reduce initial stutter
+      // Use INITIAL_THRESHOLD for first batch and QUEUE_THRESHOLD for subsequent batches
+      const threshold = totalFramesProcessedRef.current === 0 ? INITIAL_THRESHOLD : QUEUE_THRESHOLD;
+      
       // Process frames when queue reaches threshold
-      if (frameQueueRef.current.length >= QUEUE_THRESHOLD && !isProcessingQueueRef.current) {
+      if (frameQueueRef.current.length >= threshold && !isProcessingQueueRef.current) {
         processFrameQueue();
       }
       
@@ -664,7 +780,12 @@ export default function VideoConverter({ lang }) {
       
       if (elapsed >= frameInterval) {
         lastFrameTimeRef.current = now - (elapsed % frameInterval);
-        captureFrame();
+        
+        // Skip frame capture in the first 200ms to let playback stabilize
+        const videoCurrentTime = videoRef.current?.currentTime || 0;
+        if (videoCurrentTime > 0.2) {
+          captureFrame();
+        }
       }
       
       animationFrameRef.current = requestAnimationFrame(captureFrameLoop);
@@ -678,6 +799,7 @@ export default function VideoConverter({ lang }) {
       }
       
       // Start the capture loop
+      lastFrameTimeRef.current = performance.now();
       animationFrameRef.current = requestAnimationFrame(captureFrameLoop);
     } else if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
@@ -807,7 +929,12 @@ export default function VideoConverter({ lang }) {
                     frameQueueRef.current = [];
                     imageDataPoolRef.current = [];
                     
-                    // Reset encoder state
+                    // Reset processing flags
+                    isProcessingQueueRef.current = false;
+                    isFinalizingRef.current = false;
+                    
+                    // We need to close and reinitialize encoder and muxer for each recording session
+                    // to avoid timestamp issues with the muxer
                     encoderInitializedRef.current = false;
                     if (videoEncoderRef.current) {
                       try {
@@ -819,6 +946,7 @@ export default function VideoConverter({ lang }) {
                     videoEncoderRef.current = null;
                     muxerRef.current = null;
                     targetRef.current = null;
+                    totalFramesProcessedRef.current = 0;
                     
                     triggerGC();
                   }}
@@ -868,7 +996,12 @@ export default function VideoConverter({ lang }) {
                       imageDataPoolRef.current = [];
                       lastCaptureTimeRef.current = 0;
                       
-                      // Reset encoder state
+                      // Reset processing flags
+                      isProcessingQueueRef.current = false;
+                      isFinalizingRef.current = false;
+                      
+                      // We need to close and reinitialize encoder and muxer for each recording session
+                      // to avoid timestamp issues with the muxer
                       encoderInitializedRef.current = false;
                       if (videoEncoderRef.current) {
                         try {
@@ -882,7 +1015,6 @@ export default function VideoConverter({ lang }) {
                       targetRef.current = null;
                       totalFramesProcessedRef.current = 0;
                       
-                      // Trigger garbage collection
                       triggerGC();
                       
                       // Reset video position
