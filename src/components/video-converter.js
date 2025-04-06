@@ -8,9 +8,22 @@ import VideoMask from './video-mask';
 import ExportProgress from './export-progress';
 import { useTranslations } from '@/hooks/use-translations';
 
+// Constants for video encoding
+const VIDEO_CONFIG = {
+  width: 610,
+  height: 1084,
+  bitrate: 2_000_000, // 2Mbps
+  fps: 30,
+  chunkSize: 30, // Process 30 frames at a time
+  queueThreshold: 60, // Process after accumulating 60 frames (2 seconds at 30fps)
+  initialThreshold: 10, // Start processing after just 10 frames for smoother start
+  initialChunkSize: 5, // Use smaller chunks for the first processing batch
+};
+
 export default function VideoConverter({ lang }) {
   const { t } = useTranslations(lang);
   
+  // State for video handling
   const [videoFile, setVideoFile] = useState(null);
   const [videoUrl, setVideoUrl] = useState('');
   const [videoMetadata, setVideoMetadata] = useState({
@@ -19,6 +32,8 @@ export default function VideoConverter({ lang }) {
     duration: 0,
     fps: 30 // Default to 30fps, will be updated when video is loaded
   });
+  
+  // UI state
   const [isPlaying, setIsPlaying] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [countdown, setCountdown] = useState(0);
@@ -29,21 +44,23 @@ export default function VideoConverter({ lang }) {
   const [showVideoInput, setShowVideoInput] = useState(true);
   const [outputFileName, setOutputFileName] = useState('');
   const [playbackSpeed, setPlaybackSpeed] = useState(0.5);
-  const [frameRate, setFrameRate] = useState(30);
   const [memoryUsage, setMemoryUsage] = useState(0);
   
-  const lastFrameTimeRef = useRef(0);
+  // Refs for DOM elements
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const maskRef = useRef(null);
-  const animationFrameRef = useRef(null);
-  const recordedFramesRef = useRef([]);
-  const lastCaptureTimeRef = useRef(0);
-  const imageDataPoolRef = useRef([]);
   const offscreenCanvasRef = useRef(null);
   
-  // New refs for streaming processing
+  // Refs for frame capturing and processing
+  const lastFrameTimeRef = useRef(0);
+  const animationFrameRef = useRef(null);
+  const lastCaptureTimeRef = useRef(0);
+  const recordedFramesRef = useRef([]);
+  const imageDataPoolRef = useRef([]);
   const frameQueueRef = useRef([]);
+  
+  // Refs for video encoding
   const isProcessingQueueRef = useRef(false);
   const lastProcessedTimeRef = useRef(0);
   const videoEncoderRef = useRef(null);
@@ -54,29 +71,69 @@ export default function VideoConverter({ lang }) {
   const recordingStartTimeRef = useRef(0);
   const isFinalizingRef = useRef(false);
   
-  // Constants for video encoding
-  const TARGET_WIDTH = 610;
-  const TARGET_HEIGHT = 1084;
-  const TARGET_BITRATE = 2_000_000; // 2Mbps
-  const TARGET_FPS = 30;
-  const CHUNK_SIZE = 30; // Process 30 frames at a time
-  const QUEUE_THRESHOLD = 60; // Process after accumulating 60 frames (2 seconds at 30fps)
-  const INITIAL_THRESHOLD = 10; // Start processing after just 10 frames for smoother start
-  const INITIAL_CHUNK_SIZE = 5; // Use smaller chunks for the first processing batch
-  
   // Generate a random filename for the output video
-  const generateRandomFileName = () => {
+  const generateRandomFileName = useCallback(() => {
     const date = new Date();
     const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
     const randomStr = Math.random().toString(36).substring(2, 10);
     return `vertical-video-${dateStr}-${randomStr}.mp4`;
-  };
+  }, []);
   
   // Get FPS from video metadata
   const getFps = useCallback(() => {
-    // Return the detected fps or fallback to 30fps
     return videoMetadata.fps || 30;
   }, [videoMetadata.fps]);
+  
+  // Helper function to safely close the encoder
+  const closeEncoder = useCallback(() => {
+    if (videoEncoderRef.current) {
+      try {
+        videoEncoderRef.current.close();
+      } catch (e) {
+        console.error('Error closing encoder:', e);
+      }
+      videoEncoderRef.current = null;
+    }
+  }, []);
+  
+  // Helper function to reset encoder state
+  const resetEncoderState = useCallback(() => {
+    encoderInitializedRef.current = false;
+    closeEncoder();
+    muxerRef.current = null;
+    targetRef.current = null;
+    totalFramesProcessedRef.current = 0;
+    lastProcessedTimeRef.current = 0;
+  }, [closeEncoder]);
+  
+  // Helper function to reset frame data
+  const resetFrameData = useCallback(() => {
+    recordedFramesRef.current = [];
+    frameQueueRef.current = [];
+    imageDataPoolRef.current = [];
+    lastCaptureTimeRef.current = 0;
+    isProcessingQueueRef.current = false;
+    isFinalizingRef.current = false;
+  }, []);
+  
+  // Reset all video processing state
+  const resetVideoProcessingState = useCallback(() => {
+    resetEncoderState();
+    resetFrameData();
+    
+    // Reset video position if available
+    if (videoRef.current) {
+      videoRef.current.currentTime = 0;
+      videoRef.current.pause();
+    }
+    
+    // UI state reset
+    setProcessingError('');
+    setExportProgress(0);
+    
+    // Force remount of mask
+    setVideoResetKey(prevKey => prevKey + 1);
+  }, [resetEncoderState, resetFrameData]);
   
   // Helper function to get ImageData from pool
   const getImageDataFromPool = useCallback((width, height) => {
@@ -133,28 +190,27 @@ export default function VideoConverter({ lang }) {
         target: targetRef.current,
         video: {
           codec: 'avc',
-          width: TARGET_WIDTH,
-          height: TARGET_HEIGHT,
-          frameRate: TARGET_FPS
+          width: VIDEO_CONFIG.width,
+          height: VIDEO_CONFIG.height,
+          frameRate: VIDEO_CONFIG.fps
         },
         fastStart: 'in-memory'
       });
       
       // Initialize encoder with basic configuration
-      // Simplify config to avoid unsupported options
       const encoderConfig = {
         codec: 'avc1.42001f', // H.264 baseline profile
-        width: TARGET_WIDTH,
-        height: TARGET_HEIGHT,
-        bitrate: TARGET_BITRATE,
-        framerate: TARGET_FPS
+        width: VIDEO_CONFIG.width,
+        height: VIDEO_CONFIG.height,
+        bitrate: VIDEO_CONFIG.bitrate,
+        framerate: VIDEO_CONFIG.fps
       };
       
       // Initialize encoder
       videoEncoderRef.current = new VideoEncoder({
         output: (chunk, meta) => {
           try {
-            muxerRef.current.addVideoChunk(chunk, meta);
+            muxerRef.current?.addVideoChunk(chunk, meta);
           } catch (e) {
             console.error('Error adding video chunk to muxer:', e);
           }
@@ -176,8 +232,8 @@ export default function VideoConverter({ lang }) {
         console.log('Attempting with fallback configuration...');
         await videoEncoderRef.current.configure({
           codec: 'avc1.42001f',
-          width: TARGET_WIDTH,
-          height: TARGET_HEIGHT,
+          width: VIDEO_CONFIG.width,
+          height: VIDEO_CONFIG.height,
           bitrate: 1_000_000 // Lower bitrate
         });
         
@@ -212,7 +268,7 @@ export default function VideoConverter({ lang }) {
   
   // Process a single frame
   const processFrame = useCallback(async (frame, timestampMicros) => {
-    if (!frame || !frame.imageData || !videoEncoderRef.current || !offscreenCanvasRef.current) return;
+    if (!frame?.imageData || !videoEncoderRef.current || !offscreenCanvasRef.current) return;
     
     const canvas = offscreenCanvasRef.current;
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -229,7 +285,7 @@ export default function VideoConverter({ lang }) {
       // Create video frame
       const videoFrame = new VideoFrame(canvas, {
         timestamp: timestampMicros,
-        duration: Math.round(1000000 / TARGET_FPS)
+        duration: Math.round(1000000 / VIDEO_CONFIG.fps)
       });
       
       // Key frame every 30 frames or on first frame
@@ -246,7 +302,6 @@ export default function VideoConverter({ lang }) {
       // Race between encode and timeout
       await Promise.race([encodePromise, timeoutPromise]).catch(err => {
         console.error('Error during frame encoding:', err);
-        // Close the frame even if encoding fails
       }).finally(() => {
         // Always close the video frame to free up resources
         videoFrame.close();
@@ -274,8 +329,8 @@ export default function VideoConverter({ lang }) {
       
       // Use smaller chunk size for first batch to reduce stutter
       const actualChunkSize = totalFramesProcessedRef.current === 0 
-        ? INITIAL_CHUNK_SIZE 
-        : CHUNK_SIZE;
+        ? VIDEO_CONFIG.initialChunkSize 
+        : VIDEO_CONFIG.chunkSize;
       
       // Additional yield before taking frames
       if (totalFramesProcessedRef.current === 0) {
@@ -308,12 +363,12 @@ export default function VideoConverter({ lang }) {
       }
       
       // Calculate frames needed for this time range
-      const framesNeeded = Math.max(1, Math.ceil(timeRangeMs * TARGET_FPS / 1000));
+      const framesNeeded = Math.max(1, Math.ceil(timeRangeMs * VIDEO_CONFIG.fps / 1000));
       
       // Process frames with consistent timing and yield between frames to prevent stutter
       for (let i = 0; i < framesNeeded; i++) {
         // Calculate target time relative to batch start
-        const targetTime = startTime + (i * 1000 / TARGET_FPS);
+        const targetTime = startTime + (i * 1000 / VIDEO_CONFIG.fps);
         
         // Skip if we've passed the end time
         if (targetTime > endTime) break;
@@ -349,7 +404,7 @@ export default function VideoConverter({ lang }) {
       
       // Clean up processed frames
       framesToProcess.forEach(frame => {
-        if (frame && frame.imageData) {
+        if (frame?.imageData) {
           returnImageDataToPool(frame.imageData);
           frame.imageData = null;
         }
@@ -375,23 +430,17 @@ export default function VideoConverter({ lang }) {
   // Clean up URLs when component unmounts
   useEffect(() => {
     return () => {
+      // Cleanup URL objects
       if (videoUrl) URL.revokeObjectURL(videoUrl);
       if (outputVideoUrl) URL.revokeObjectURL(outputVideoUrl);
       
-      // Clean up encoder and muxer
-      if (videoEncoderRef.current) {
-        try {
-          videoEncoderRef.current.close();
-        } catch (e) {
-          console.error('Error closing encoder:', e);
-        }
-      }
+      // Clean up encoder and resources
+      closeEncoder();
       
-      // Clear image data pool
-      imageDataPoolRef.current = [];
-      frameQueueRef.current = [];
+      // Clear data structures
+      resetFrameData();
     };
-  }, [videoUrl, outputVideoUrl]);
+  }, [videoUrl, outputVideoUrl, closeEncoder, resetFrameData]);
   
   // Finalize video processing
   const finalizeVideo = useCallback(async () => {
@@ -423,24 +472,8 @@ export default function VideoConverter({ lang }) {
       console.log(`Video export complete. Processed ${totalFramesProcessedRef.current} frames.`);
       
       // Clean up resources
-      frameQueueRef.current = [];
-      recordedFramesRef.current = [];
-      imageDataPoolRef.current = [];
-      
-      // Close encoder
-      try {
-        videoEncoderRef.current.close();
-      } catch (e) {
-        console.error('Error closing encoder:', e);
-      }
-      
-      // Reset references for future recordings
-      videoEncoderRef.current = null;
-      muxerRef.current = null;
-      targetRef.current = null;
-      encoderInitializedRef.current = false;
-      lastProcessedTimeRef.current = 0;
-      totalFramesProcessedRef.current = 0;
+      resetFrameData();
+      resetEncoderState();
       
       // Trigger garbage collection
       await triggerGC();
@@ -452,44 +485,33 @@ export default function VideoConverter({ lang }) {
     } finally {
       isFinalizingRef.current = false;
     }
-  }, [t, triggerGC]);
+  }, [t, triggerGC, generateRandomFileName, resetFrameData, resetEncoderState]);
 
   // Handle video file upload
-  const handleVideoUpload = (file) => {
+  const handleVideoUpload = useCallback((file) => {
+    // Clean up existing resources
     if (videoUrl) URL.revokeObjectURL(videoUrl);
     if (outputVideoUrl) {
       URL.revokeObjectURL(outputVideoUrl);
       setOutputVideoUrl('');
     }
     
-    // Close existing encoder if any
-    if (videoEncoderRef.current) {
-      try {
-        videoEncoderRef.current.close();
-      } catch (e) {
-        console.error('Error closing encoder:', e);
-      }
-    }
+    // Close existing encoder
+    resetEncoderState();
     
+    // Set up new video
     setVideoFile(file);
     setVideoUrl(URL.createObjectURL(file));
+    
+    // Reset UI state
     setIsPlaying(false);
     setIsRecording(false);
     setExportProgress(0);
     setProcessingError('');
     setShowVideoInput(true);
-    recordedFramesRef.current = [];
-    frameQueueRef.current = [];
-    lastCaptureTimeRef.current = 0;
-    imageDataPoolRef.current = []; // Clear image data pool
     
-    // Reset encoder state completely for a new video
-    encoderInitializedRef.current = false;
-    videoEncoderRef.current = null;
-    muxerRef.current = null;
-    targetRef.current = null;
-    totalFramesProcessedRef.current = 0;
-    lastProcessedTimeRef.current = 0;
+    // Reset processing state
+    resetFrameData();
     
     // Increment key to force re-mount of mask
     setVideoResetKey(prevKey => prevKey + 1);
@@ -501,29 +523,29 @@ export default function VideoConverter({ lang }) {
       duration: 0,
       fps: 30 // Will be updated when video is loaded
     });
-  };
+  }, [videoUrl, outputVideoUrl, resetEncoderState, resetFrameData]);
   
   // Initialize OffscreenCanvas if available
   useEffect(() => {
     // Create offscreen canvas if supported
     if (typeof OffscreenCanvas !== 'undefined') {
-      offscreenCanvasRef.current = new OffscreenCanvas(TARGET_WIDTH, TARGET_HEIGHT);
+      offscreenCanvasRef.current = new OffscreenCanvas(VIDEO_CONFIG.width, VIDEO_CONFIG.height);
     } else {
       // Fallback to regular canvas
       const canvas = document.createElement('canvas');
-      canvas.width = TARGET_WIDTH;
-      canvas.height = TARGET_HEIGHT;
+      canvas.width = VIDEO_CONFIG.width;
+      canvas.height = VIDEO_CONFIG.height;
       offscreenCanvasRef.current = canvas;
     }
   }, []);
   
   // Load video metadata when video is loaded
-  const handleVideoLoad = (metadata) => {
+  const handleVideoLoad = useCallback((metadata) => {
     setVideoMetadata(metadata);
-  };
+  }, []);
   
   // Start recording process with countdown
-  const startRecording = () => {
+  const startRecording = useCallback(() => {
     if (!videoRef.current || isRecording) return;
     
     // Reset video to beginning
@@ -531,16 +553,13 @@ export default function VideoConverter({ lang }) {
     videoRef.current.pause(); // Pause until countdown finishes
     
     // Reset state
-    recordedFramesRef.current = [];
-    frameQueueRef.current = [];
-    lastCaptureTimeRef.current = 0;
+    resetFrameData();
     totalFramesProcessedRef.current = 0;
     lastProcessedTimeRef.current = 0;
     recordingStartTimeRef.current = 0;
     setProcessingError('');
     
     // Pre-initialize encoder before starting countdown to reduce stutter
-    // We use a small delay to ensure UI is responsive during initialization
     const startCountdown = () => {
       setCountdown(3);
       
@@ -570,18 +589,15 @@ export default function VideoConverter({ lang }) {
     } else {
       startCountdown();
     }
-  };
+  }, [isRecording, initializeEncoder, t, resetFrameData]);
   
   // Begin actual recording after countdown
-  const beginRecording = () => {
+  const beginRecording = useCallback(() => {
     setIsRecording(true);
     setIsPlaying(true);
     
-    // Clear image data pool before starting new recording
-    imageDataPoolRef.current = [];
-    frameQueueRef.current = [];
-    
-    // Reset frame processing counters to ensure proper initialization
+    // Reset state for clean recording
+    resetFrameData();
     totalFramesProcessedRef.current = 0;
     lastProcessedTimeRef.current = 0;
     recordingStartTimeRef.current = 0;
@@ -606,10 +622,10 @@ export default function VideoConverter({ lang }) {
         }
       }
     }, 300); // Increased delay to ensure encoder is fully initialized
-  };
+  }, [resetFrameData]);
   
   // Restart recording process
-  const handleRestartRecording = () => {
+  const handleRestartRecording = useCallback(() => {
     // Stop current recording
     setIsRecording(false);
     setIsPlaying(false);
@@ -622,40 +638,14 @@ export default function VideoConverter({ lang }) {
       videoRef.current.pause();
     }
     
-    // Clear frames and state
-    recordedFramesRef.current = [];
-    frameQueueRef.current = [];
-    imageDataPoolRef.current = [];
-    lastCaptureTimeRef.current = 0;
-    totalFramesProcessedRef.current = 0;
-    lastProcessedTimeRef.current = 0;
-    
-    // Reset processing flags
-    isProcessingQueueRef.current = false;
-    isFinalizingRef.current = false;
-    
-    // We need to close and reinitialize encoder and muxer for each recording session
-    // to avoid timestamp issues with the muxer
-    encoderInitializedRef.current = false;
-    if (videoEncoderRef.current) {
-      try {
-        videoEncoderRef.current.close();
-      } catch (e) {
-        console.error('Error closing encoder:', e);
-      }
-    }
-    videoEncoderRef.current = null;
-    muxerRef.current = null;
-    targetRef.current = null;
-    
-    // Trigger garbage collection
-    triggerGC();
+    // Reset all processing state
+    resetVideoProcessingState();
     
     // Small delay before starting new countdown
     setTimeout(() => {
       startRecording();
     }, 500);
-  };
+  }, [resetVideoProcessingState, startRecording]);
   
   // Capture frames during recording
   const captureFrame = useCallback(() => {
@@ -670,9 +660,7 @@ export default function VideoConverter({ lang }) {
     const currentTime = video.currentTime * 1000;
     
     // Skip duplicate frames based on timestamp
-    if (lastCaptureTimeRef.current === currentTime) {
-      return;
-    }
+    if (lastCaptureTimeRef.current === currentTime) return;
     
     lastCaptureTimeRef.current = currentTime;
     
@@ -693,44 +681,41 @@ export default function VideoConverter({ lang }) {
       const sourceWidth = relWidth * video.videoWidth;
       const sourceHeight = relHeight * video.videoHeight;
       
-      // Ensure dimensions match our target resolution with even numbers
-      const evenSourceWidth = Math.min(Math.floor(sourceWidth / 2) * 2, TARGET_WIDTH);
-      const evenSourceHeight = Math.min(Math.floor(sourceHeight / 2) * 2, TARGET_HEIGHT);
-      
       // Set canvas dimensions
-      offscreenCanvas.width = TARGET_WIDTH;
-      offscreenCanvas.height = TARGET_HEIGHT;
+      offscreenCanvas.width = VIDEO_CONFIG.width;
+      offscreenCanvas.height = VIDEO_CONFIG.height;
       
       // Draw the current frame to the offscreen canvas
       offscreenCtx.drawImage(
         video,
         sourceX, sourceY, sourceWidth, sourceHeight,
-        0, 0, TARGET_WIDTH, TARGET_HEIGHT
+        0, 0, VIDEO_CONFIG.width, VIDEO_CONFIG.height
       );
       
       // Reuse ImageData from pool or create new one
-      let imageData = getImageDataFromPool(TARGET_WIDTH, TARGET_HEIGHT);
+      let imageData = getImageDataFromPool(VIDEO_CONFIG.width, VIDEO_CONFIG.height);
       if (!imageData) {
-        imageData = offscreenCtx.createImageData(TARGET_WIDTH, TARGET_HEIGHT);
+        imageData = offscreenCtx.createImageData(VIDEO_CONFIG.width, VIDEO_CONFIG.height);
       }
       
       // Get current canvas data
-      const canvasData = offscreenCtx.getImageData(0, 0, TARGET_WIDTH, TARGET_HEIGHT);
+      const canvasData = offscreenCtx.getImageData(0, 0, VIDEO_CONFIG.width, VIDEO_CONFIG.height);
       
       // Copy canvas data to our reusable ImageData
       imageData.data.set(canvasData.data);
       
-      // Add frame to queue instead of large array
+      // Add frame to queue
       frameQueueRef.current.push({
         imageData,
         timestamp: currentTime,
-        width: TARGET_WIDTH,
-        height: TARGET_HEIGHT
+        width: VIDEO_CONFIG.width,
+        height: VIDEO_CONFIG.height
       });
       
-      // Start processing earlier with a smaller number of frames to reduce initial stutter
-      // Use INITIAL_THRESHOLD for first batch and QUEUE_THRESHOLD for subsequent batches
-      const threshold = totalFramesProcessedRef.current === 0 ? INITIAL_THRESHOLD : QUEUE_THRESHOLD;
+      // Start processing at appropriate threshold
+      const threshold = totalFramesProcessedRef.current === 0 
+        ? VIDEO_CONFIG.initialThreshold 
+        : VIDEO_CONFIG.queueThreshold;
       
       // Process frames when queue reaches threshold
       if (frameQueueRef.current.length >= threshold && !isProcessingQueueRef.current) {
@@ -748,7 +733,7 @@ export default function VideoConverter({ lang }) {
   }, [isRecording, getImageDataFromPool, processFrameQueue, triggerGC]);
   
   // Handle video ended event
-  const handleVideoEnded = async () => {
+  const handleVideoEnded = useCallback(async () => {
     setIsPlaying(false);
     setIsRecording(false);
     
@@ -769,14 +754,14 @@ export default function VideoConverter({ lang }) {
       // If no frames to process, just finalize the video
       await finalizeVideo();
     }
-  };
+  }, [finalizeVideo, processFrameQueue]);
   
   // Set up animation frame for frame capture
   useEffect(() => {
     const captureFrameLoop = () => {
       const now = performance.now();
       const elapsed = now - lastFrameTimeRef.current;
-      const frameInterval = 1000 / frameRate;
+      const frameInterval = 1000 / VIDEO_CONFIG.fps;
       
       if (elapsed >= frameInterval) {
         lastFrameTimeRef.current = now - (elapsed % frameInterval);
@@ -792,9 +777,8 @@ export default function VideoConverter({ lang }) {
     };
     
     if (isRecording) {
-      // Use lower playback speed for high bitrate videos to ensure consistent frame capture
+      // Set playback speed
       if (videoRef.current) {
-        // Store original playback rate to restore later
         videoRef.current.playbackRate = playbackSpeed;
       }
       
@@ -815,7 +799,69 @@ export default function VideoConverter({ lang }) {
         cancelAnimationFrame(animationFrameRef.current);
       }
     };
-  }, [isRecording, frameRate, captureFrame, playbackSpeed]);
+  }, [isRecording, captureFrame, playbackSpeed]);
+
+  // Reset processing state and try again button handler
+  const handleTryAgain = useCallback(() => {
+    setProcessingError('');
+    setExportProgress(0);
+    resetVideoProcessingState();
+  }, [resetVideoProcessingState]);
+  
+  // Record again button handler
+  const handleRecordAgain = useCallback(() => {
+    if (videoFile) {
+      // Revoke existing URLs
+      if (videoUrl) URL.revokeObjectURL(videoUrl);
+      if (outputVideoUrl) URL.revokeObjectURL(outputVideoUrl);
+      
+      // Create a fresh URL from the same file to reset security context
+      setVideoUrl(URL.createObjectURL(videoFile));
+    }
+    
+    // Reset state
+    setOutputVideoUrl('');
+    setProcessingError('');
+    setExportProgress(0);
+    setShowVideoInput(true); // Show the video input again
+    
+    // Reset all processing state
+    resetVideoProcessingState();
+    
+    // Reset video position
+    if (videoRef.current) {
+      videoRef.current.currentTime = 0;
+      videoRef.current.pause();
+    }
+  }, [videoFile, videoUrl, outputVideoUrl, resetVideoProcessingState]);
+  
+  // Convert another video button handler
+  const handleConvertAnotherVideo = useCallback(() => {
+    // Clean up URLs
+    if (videoUrl) URL.revokeObjectURL(videoUrl);
+    if (outputVideoUrl) URL.revokeObjectURL(outputVideoUrl);
+    
+    // Reset state
+    setVideoFile(null);
+    setVideoUrl('');
+    setOutputVideoUrl('');
+    setProcessingError('');
+    setShowVideoInput(true);
+    
+    // Reset mask state by incrementing key
+    setVideoResetKey(prevKey => prevKey + 1);
+    
+    // Reset video metadata
+    setVideoMetadata({
+      width: 0,
+      height: 0,
+      duration: 0,
+      fps: 30
+    });
+    
+    // Reset processing state
+    resetVideoProcessingState();
+  }, [videoUrl, outputVideoUrl, resetVideoProcessingState]);
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
@@ -823,6 +869,16 @@ export default function VideoConverter({ lang }) {
         <VideoUploader onUpload={handleVideoUpload} lang={lang} />
       ) : (
         <div className="relative flex flex-col items-center">
+          {/* Back/New Video button always visible after video upload */}
+          <div className="self-start mb-4">
+            <button
+              onClick={handleConvertAnotherVideo}
+              className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors text-sm"
+            >
+              ← {t('video.converter.convertAnotherVideo')}
+            </button>
+          </div>
+          
           {showVideoInput && (
             <>
               {/* Video and mask container */}
@@ -918,38 +974,7 @@ export default function VideoConverter({ lang }) {
               <div className="text-red-500 bg-red-100 p-3 rounded w-full text-center">
                 <p>{processingError}</p>
                 <button
-                  onClick={() => {
-                    setProcessingError('');
-                    setExportProgress(0);
-                    // Reset mask position by forcing a remount
-                    setVideoResetKey(prevKey => prevKey + 1);
-                    
-                    // Clear memory
-                    recordedFramesRef.current = [];
-                    frameQueueRef.current = [];
-                    imageDataPoolRef.current = [];
-                    
-                    // Reset processing flags
-                    isProcessingQueueRef.current = false;
-                    isFinalizingRef.current = false;
-                    
-                    // We need to close and reinitialize encoder and muxer for each recording session
-                    // to avoid timestamp issues with the muxer
-                    encoderInitializedRef.current = false;
-                    if (videoEncoderRef.current) {
-                      try {
-                        videoEncoderRef.current.close();
-                      } catch (e) {
-                        console.error('Error closing encoder:', e);
-                      }
-                    }
-                    videoEncoderRef.current = null;
-                    muxerRef.current = null;
-                    targetRef.current = null;
-                    totalFramesProcessedRef.current = 0;
-                    
-                    triggerGC();
-                  }}
+                  onClick={handleTryAgain}
                   className="mt-2 px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
                 >
                   {t('video.converter.tryAgain')}
@@ -976,109 +1001,12 @@ export default function VideoConverter({ lang }) {
                   </a>
                   
                   <button
-                    onClick={() => {
-                      if (videoFile) {
-                        // Revoke existing URLs
-                        if (videoUrl) URL.revokeObjectURL(videoUrl);
-                        if (outputVideoUrl) URL.revokeObjectURL(outputVideoUrl);
-                        
-                        // Create a fresh URL from the same file to reset security context
-                        setVideoUrl(URL.createObjectURL(videoFile));
-                      }
-                      
-                      // Reset state
-                      setOutputVideoUrl('');
-                      setProcessingError('');
-                      setExportProgress(0);
-                      setShowVideoInput(true); // Show the video input again
-                      recordedFramesRef.current = [];
-                      frameQueueRef.current = [];
-                      imageDataPoolRef.current = [];
-                      lastCaptureTimeRef.current = 0;
-                      
-                      // Reset processing flags
-                      isProcessingQueueRef.current = false;
-                      isFinalizingRef.current = false;
-                      
-                      // We need to close and reinitialize encoder and muxer for each recording session
-                      // to avoid timestamp issues with the muxer
-                      encoderInitializedRef.current = false;
-                      if (videoEncoderRef.current) {
-                        try {
-                          videoEncoderRef.current.close();
-                        } catch (e) {
-                          console.error('Error closing encoder:', e);
-                        }
-                      }
-                      videoEncoderRef.current = null;
-                      muxerRef.current = null;
-                      targetRef.current = null;
-                      totalFramesProcessedRef.current = 0;
-                      
-                      triggerGC();
-                      
-                      // Reset video position
-                      if (videoRef.current) {
-                        videoRef.current.currentTime = 0;
-                        videoRef.current.pause();
-                      }
-                      
-                      // Reset mask position by forcing a remount
-                      setVideoResetKey(prevKey => prevKey + 1);
-                      
-                      // Give a small delay before allowing recording to start
-                      // This ensures the video element has time to properly reset
-                      setTimeout(() => {
-                        // Ready for recording again
-                      }, 100);
-                    }}
+                    onClick={handleRecordAgain}
                     className="px-4 py-2 bg-yellow-600 text-white rounded hover:bg-yellow-700 transition-colors"
                   >
                     {t('video.converter.recordAgain')}
                   </button>
                 </div>
-                
-                <button
-                  onClick={() => {
-                    setVideoFile(null);
-                    setVideoUrl('');
-                    setOutputVideoUrl('');
-                    setProcessingError('');
-                    setShowVideoInput(true); // Show the video input for the next upload
-                    // Reset mask state by incrementing key
-                    setVideoResetKey(prevKey => prevKey + 1);
-                    // Reset video metadata
-                    setVideoMetadata({
-                      width: 0,
-                      height: 0,
-                      duration: 0,
-                      fps: 30
-                    });
-                    
-                    // Clear memory
-                    recordedFramesRef.current = [];
-                    frameQueueRef.current = [];
-                    imageDataPoolRef.current = [];
-                    
-                    // Reset encoder state
-                    encoderInitializedRef.current = false;
-                    if (videoEncoderRef.current) {
-                      try {
-                        videoEncoderRef.current.close();
-                      } catch (e) {
-                        console.error('Error closing encoder:', e);
-                      }
-                    }
-                    videoEncoderRef.current = null;
-                    muxerRef.current = null;
-                    targetRef.current = null;
-                    
-                    triggerGC();
-                  }}
-                  className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 transition-colors"
-                >
-                  {t('video.converter.convertAnotherVideo')}
-                </button>
               </div>
             )}
             
