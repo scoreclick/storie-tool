@@ -67,7 +67,7 @@ const VideoPlayer = forwardRef(function VideoPlayer({ src, onLoad, onEnded, isPl
       <div className="flex justify-center">
         <video
           ref={ref}
-          src={src}
+          src={src+'#t=0.001'}
           className="max-w-full max-h-[70vh] object-contain"
           onLoadedMetadata={handleLoadedMetadata}
           onEnded={onEnded}
@@ -79,7 +79,7 @@ const VideoPlayer = forwardRef(function VideoPlayer({ src, onLoad, onEnded, isPl
             }
           }}
           playsInline
-          preload='auto'
+          preload='metadata'
         />
         
         {!isLoaded && (
