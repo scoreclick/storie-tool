@@ -20,7 +20,7 @@ const VIDEO_CONFIG = {
   initialChunkSize: 5, // Use smaller chunks for the first processing batch
 };
 
-export default function VideoConverter({ lang }) {
+export default function VideoConverter({ lang, videoUrl: initialVideoUrl }) {
   const { t } = useTranslations(lang);
   
   // State for video handling
@@ -45,6 +45,7 @@ export default function VideoConverter({ lang }) {
   const [outputFileName, setOutputFileName] = useState('');
   const [playbackSpeed, setPlaybackSpeed] = useState(0.5);
   const [memoryUsage, setMemoryUsage] = useState(0);
+  const [isLoadingFromUrl, setIsLoadingFromUrl] = useState(false);
   
   // Refs for DOM elements
   const videoRef = useRef(null);
@@ -77,6 +78,49 @@ export default function VideoConverter({ lang }) {
     const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
     const randomStr = Math.random().toString(36).substring(2, 10);
     return `vertical-video-${dateStr}-${randomStr}.mp4`;
+  }, []);
+
+  // Function to download file from URL and convert to File object
+  const downloadFileFromUrl = useCallback(async (url) => {
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+      
+      const blob = await response.blob();
+      
+      // Extract filename from URL or use a default
+      const urlParts = url.split('/');
+      const filename = urlParts[urlParts.length - 1] || 'video-from-url.mp4';
+      
+      // Create File object from blob
+      const file = new File([blob], filename, { type: blob.type || 'video/mp4' });
+      
+      return file;
+    } catch (error) {
+      console.error('Error downloading file from URL:', error);
+      throw error;
+    }
+  }, []);
+
+  // Function to validate if URL is a valid video URL
+  const isValidVideoUrl = useCallback((url) => {
+    try {
+      const urlObj = new URL(url);
+      const videoExtensions = ['.mp4', '.webm', '.ogg', '.mov', '.avi', '.mkv'];
+      const pathname = urlObj.pathname.toLowerCase();
+      
+      // Check if URL has a video extension
+      const hasVideoExtension = videoExtensions.some(ext => pathname.endsWith(ext));
+      
+      // Check if it's a valid HTTP/HTTPS URL
+      const isValidProtocol = urlObj.protocol === 'http:' || urlObj.protocol === 'https:';
+      
+      return isValidProtocol && hasVideoExtension;
+    } catch {
+      return false;
+    }
   }, []);
   
   // Get FPS from video metadata
@@ -524,6 +568,32 @@ export default function VideoConverter({ lang }) {
       fps: 30 // Will be updated when video is loaded
     });
   }, [videoUrl, outputVideoUrl, resetEncoderState, resetFrameData]);
+
+  // Track loaded URL to prevent reloading
+  const loadedUrlRef = useRef(null);
+
+  // Process initial video URL if provided
+  useEffect(() => {
+    if (initialVideoUrl && isValidVideoUrl(initialVideoUrl) && loadedUrlRef.current !== initialVideoUrl) {
+      loadedUrlRef.current = initialVideoUrl;
+      
+      const loadVideoFromUrl = async () => {
+        try {
+          setIsLoadingFromUrl(true);
+          setProcessingError('');
+          const file = await downloadFileFromUrl(initialVideoUrl);
+          handleVideoUpload(file);
+        } catch (error) {
+          console.error('Error loading video from URL:', error);
+          setProcessingError(t('video.converter.errorLoadingFromUrl') + ': ' + error.message);
+        } finally {
+          setIsLoadingFromUrl(false);
+        }
+      };
+      
+      loadVideoFromUrl();
+    }
+  }, [initialVideoUrl]); // Only depend on initialVideoUrl to prevent loops
   
   // Initialize OffscreenCanvas if available
   useEffect(() => {
@@ -865,7 +935,12 @@ export default function VideoConverter({ lang }) {
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8">
-      {!videoFile ? (
+      {isLoadingFromUrl ? (
+        <div className="flex flex-col items-center justify-center py-8">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mb-4"></div>
+          <p className="text-gray-600">{t('video.converter.loadingFromUrl')}</p>
+        </div>
+      ) : !videoFile ? (
         <VideoUploader onUpload={handleVideoUpload} lang={lang} />
       ) : (
         <div className="relative flex flex-col items-center">

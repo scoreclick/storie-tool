@@ -1,11 +1,14 @@
 'use client';
 
+import { useSearchParams } from 'next/navigation';
 import VideoConverter from './video-converter';
 import LanguageSwitcher from './language-switcher';
 import { useTranslations } from '@/hooks/use-translations';
 
 export default function HomeClient() {
   const { t } = useTranslations();
+  const searchParams = useSearchParams();
+  const videoUrl = searchParams.get('videoURL');
 
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col items-center justify-center p-4">
@@ -20,7 +23,7 @@ export default function HomeClient() {
         {t('home.description')}
       </p>
       
-      <VideoConverter />
+      <VideoConverter videoUrl={videoUrl} />
       
       <footer className="mt-8 text-xs text-center text-gray-500">
         <p>{t('home.footer')}</p>

@@ -34,6 +34,9 @@
       "processingVideo": "Processando vídeo...",
       "errorProcessing": "Erro ao processar vídeo:",
       "errorEncoding": "Erro de codificação:",
+      "errorLoadingFromUrl": "Erro ao carregar vídeo da URL",
+      "loadingFromUrl": "Carregando vídeo da URL...",
+      "noFramesCaptured": "Nenhum frame foi capturado. Tente novamente.",
       "convertAnotherVideo": "Converter Outro Vídeo",
       "recordAgain": "Gravar Novamente",
       "tryAgain": "Tentar Novamente"
