@@ -46,6 +46,7 @@ export default function VideoConverter({ lang, videoUrl: initialVideoUrl }) {
   const [playbackSpeed, setPlaybackSpeed] = useState(0.5);
   const [memoryUsage, setMemoryUsage] = useState(0);
   const [isLoadingFromUrl, setIsLoadingFromUrl] = useState(false);
+  const [logoImage, setLogoImage] = useState(null);
   
   // Refs for DOM elements
   const videoRef = useRef(null);
@@ -78,6 +79,23 @@ export default function VideoConverter({ lang, videoUrl: initialVideoUrl }) {
     const dateStr = date.toISOString().slice(0, 10).replace(/-/g, '');
     const randomStr = Math.random().toString(36).substring(2, 10);
     return `vertical-video-${dateStr}-${randomStr}.mp4`;
+  }, []);
+
+  // Load logo image
+  useEffect(() => {
+    const loadLogo = () => {
+      const img = new Image();
+      img.onload = () => {
+        setLogoImage(img);
+      };
+      img.onerror = (error) => {
+        console.warn('Failed to load logo image:', error);
+        setLogoImage(null);
+      };
+      img.src = '/assets/scoreclick-horizontal-branca.png';
+    };
+
+    loadLogo();
   }, []);
 
   // Function to download file from URL and convert to File object
@@ -761,6 +779,19 @@ export default function VideoConverter({ lang, videoUrl: initialVideoUrl }) {
         sourceX, sourceY, sourceWidth, sourceHeight,
         0, 0, VIDEO_CONFIG.width, VIDEO_CONFIG.height
       );
+
+      // Add logo overlay if logo image is loaded
+      if (logoImage) {
+        const logoHeight = 100; // Fixed height for the logo
+        const logoWidth = (logoImage.width / logoImage.height) * logoHeight;
+        const logoX = VIDEO_CONFIG.width - logoWidth - 10; // 20px margin from right
+        const logoY = VIDEO_CONFIG.height - logoHeight - 10; // 20px margin from bottom
+
+        offscreenCtx.drawImage(
+          logoImage,
+          logoX, logoY, logoWidth, logoHeight
+        );
+      }
       
       // Reuse ImageData from pool or create new one
       let imageData = getImageDataFromPool(VIDEO_CONFIG.width, VIDEO_CONFIG.height);
@@ -800,7 +831,7 @@ export default function VideoConverter({ lang, videoUrl: initialVideoUrl }) {
     } catch (error) {
       console.error('Error capturing frame:', error);
     }
-  }, [isRecording, getImageDataFromPool, processFrameQueue, triggerGC]);
+  }, [isRecording, getImageDataFromPool, processFrameQueue, triggerGC, logoImage]);
   
   // Handle video ended event
   const handleVideoEnded = useCallback(async () => {
