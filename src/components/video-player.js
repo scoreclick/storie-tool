@@ -53,6 +53,7 @@ const VideoPlayer = forwardRef(function VideoPlayer({ src, onLoad, onEnded, isPl
     
     // Pass metadata to parent component
     if (onLoad) onLoad(metadata);
+    video.currentTime = 0.1;
   };
   
   // Handle rate change (for mobile browsers that might reset playback rate)
@@ -67,7 +68,8 @@ const VideoPlayer = forwardRef(function VideoPlayer({ src, onLoad, onEnded, isPl
       <div className="flex justify-center">
         <video
           ref={ref}
-          src={src+'#t=0.001'}
+          src={src}
+          muted
           className="max-w-full max-h-[70vh] object-contain"
           onLoadedMetadata={handleLoadedMetadata}
           onEnded={onEnded}
@@ -78,7 +80,6 @@ const VideoPlayer = forwardRef(function VideoPlayer({ src, onLoad, onEnded, isPl
               ref.current.playbackRate = internalPlaybackSpeed;
             }
           }}
-          crossOrigin="anonymous"
           playsInline
           preload='metadata'
         />
