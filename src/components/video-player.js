@@ -79,7 +79,7 @@ const VideoPlayer = forwardRef(function VideoPlayer({ src, onLoad, onEnded, isPl
             }
           }}
           playsInline
-          crossOrigin="anonymous"
+          preload='auto'
         />
         
         {!isLoaded && (
