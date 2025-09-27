@@ -47,10 +47,15 @@ export function middleware(request) {
   // Get the preferred locale
   const locale = getLocale(request);
   
+  // Preserve query parameters during redirect
+  const url = new URL(`/${locale}${pathname === '/' ? '' : pathname}`, request.url);
+  // Copy all search parameters from the original request
+  request.nextUrl.searchParams.forEach((value, key) => {
+    url.searchParams.set(key, value);
+  });
+  
   // Set cookie with the locale for client-side access (for the language switcher)
-  const response = NextResponse.redirect(
-    new URL(`/${locale}${pathname === '/' ? '' : pathname}`, request.url)
-  );
+  const response = NextResponse.redirect(url);
   
   response.cookies.set('NEXT_LOCALE', locale, {
     path: '/',
