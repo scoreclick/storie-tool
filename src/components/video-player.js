@@ -78,6 +78,7 @@ const VideoPlayer = forwardRef(function VideoPlayer({ src, onLoad, onEnded, isPl
               ref.current.playbackRate = internalPlaybackSpeed;
             }
           }}
+          crossOrigin="anonymous"
           playsInline
           preload='metadata'
         />
